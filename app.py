@@ -74,23 +74,55 @@ def black_scholes_greeks(S, K, T, r, sigma, q=0.0, option_type='call'):
     }
 
 # --- Probability of Touch (POT) Function ---
-def calculate_probability_of_touch(S, K, T, r, sigma, q=0.0):
-    """Calculates the Probability of the Stock Price touching the Strike K before time T."""
+def calculate_probability_of_touch(S, K, T, r, sigma, q=0.0, option_type='call'):
+    """Calculates the Probability of the Stock Price touching the Strike K before time T.
+       Assumes POT is 100% if the option is currently In-The-Money (ITM)."""
     try:
         T_years = T / 365.0
-        if T_years <= 0 or sigma <= 0:
+        if T_years <= 0 or sigma <= 1e-6:
+            # If DTE is 0 or Volatility is 0, check if already ITM
+            if (option_type == 'call' and S >= K) or (option_type == 'put' and S <= K):
+                return 1.0
             return 0.0
+
+        # 1. Handle ITM/ATM Scenario: If the option is already ITM or ATM, POT is 100%
+        if (option_type == 'call' and S >= K) or (option_type == 'put' and S <= K):
+            return 1.0
             
-        theta = (r - q) / sigma**2 - 0.5
-        x = np.log(S / K) / (sigma * np.sqrt(T_years))
+        # 2. Handle OTM Scenario: Calculate the probability of touching the barrier K
         
-        prob_touch_final = norm.cdf(x + theta * np.sqrt(T_years)) \
-                           + (K / S)**(2 * theta) * norm.cdf(x - theta * np.sqrt(T_years))
+        # Calculate the direction-neutral log ratio term
+        log_ratio = np.log(S / K)
+        
+        # Define the adjusted drift term for the POT formula
+        mu = r - q - 0.5 * sigma**2 
+        theta = mu / (sigma**2)
+        
+        # For Puts (S > K) and Calls (S < K), we need to ensure the formula sees movement toward the barrier.
+        # This is achieved by taking the negative of the log ratio for Puts (where S > K, so log(S/K) is positive).
+        if option_type == 'put':
+            x = -log_ratio / (sigma * np.sqrt(T_years)) # Flip sign for Puts when S > K
+        else: # Call (S < K, log(S/K) is negative)
+            x = log_ratio / (sigma * np.sqrt(T_years)) # Flip sign of the ratio to make x positive
+            
+        # Ensure x is positive for the formula's terms to behave as expected for OTM options
+        x = np.abs(x) 
+
+        # The standard first-passage-time formula (POT) for a single barrier:
+        pot_term1 = norm.cdf(x + theta * sigma * np.sqrt(T_years))
+        pot_term2 = (K / S)**(2 * theta) * norm.cdf(x - theta * sigma * np.sqrt(T_years))
+
+        # The POT calculation must be 1 - (Prob not touching) but the standard formula 
+        # is already designed to calculate the probability of touching (1 - P(no-touch)).
+        prob_touch_final = pot_term1 + pot_term2
                            
         return np.clip(prob_touch_final, 0.0, 1.0)
         
     except Exception:
-        return 1.0 
+        # Fallback to 1.0 if ITM/ATM, 0.0 otherwise
+        if (option_type == 'call' and S >= K) or (option_type == 'put' and S <= K):
+            return 1.0
+        return 0.0
 
 # --- Implied Volatility Solver ---
 def calculate_implied_volatility(S, K, T, r, market_price, q=0.0, option_type='call'):
