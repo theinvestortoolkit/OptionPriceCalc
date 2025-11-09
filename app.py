@@ -132,7 +132,6 @@ def find_next_3rd_friday(min_days=30):
     return exp_date.strftime('%Y-%m-%d'), exp_date
 
 # --- Fetch ALL Market Data for the specified Ticker, Strike, Expiry, and Type ---
-# @st.cache_data(ttl=3600) # Removed cache since we now use session state logic for dynamic updates
 def fetch_all_market_data(ticker_symbol, strike, expiration_date_str, option_type):
     """Fetches S, RFR, Q, and the specific option's IV and Price."""
     
@@ -203,13 +202,11 @@ def fetch_all_market_data(ticker_symbol, strike, expiration_date_str, option_typ
 # ==============================================================================
 
 # Custom function to handle initialization and fetching for the session
-# This function is run ONLY on app startup or if the main refresh button is pressed
 def init_or_fetch_data(ticker_symbol, strike, expiration_date_str, option_type, refresh=False):
     if 'data_state' not in st.session_state or refresh:
-        # Fetch data and store it directly in the session state
+        # If initializing (first run) or explicitly refreshing
         fetched_data = fetch_all_market_data(ticker_symbol, strike, expiration_date_str, option_type)
         st.session_state.data_state = {
-            # Ensure the values are always rounded when stored in state for display consistency
             'S': round(fetched_data['S'], 2),
             'r_percent': round(fetched_data['r_percent'], 2),
             'q_percent': round(fetched_data['q_percent'], 2),
@@ -217,6 +214,9 @@ def init_or_fetch_data(ticker_symbol, strike, expiration_date_str, option_type, 
             'market_price': round(fetched_data['market_price'], 2),
             'error': fetched_data['error']
         }
+        # Initialize the dynamic key for Volatility
+        if 'sigma_key_version' not in st.session_state:
+             st.session_state.sigma_key_version = 0
     return st.session_state.data_state
 
 def main():
@@ -225,49 +225,45 @@ def main():
     st.title("💰 Advanced Option Calculator")
     st.markdown("---")
     
-    # Define Ticker and Expiry defaults before the sidebar block
     default_ticker = "SPY"
     _, default_date = find_next_3rd_friday(min_days=30)
-    # Using a known strike to ensure initial fetch works (e.g., SPY 450)
     default_strike = 450.0 
 
     # --- Sidebar Inputs & Ticker Handling ---
     with st.sidebar:
         st.header("1. Core Inputs")
         
-        # Ticker Symbol
         ticker_symbol = st.text_input("Stock Symbol:", default_ticker).upper()
-        
-        # Option Type and Expiry 
         option_type = st.radio("Option Type:", ['call', 'put'], horizontal=True)
-        # Use st.session_state to hold the strike/date inputs to maintain their value
         K = st.number_input("Strike Price (K):", value=default_strike, format="%.2f", key='k_input') 
         expiration_date = st.date_input("Expiration Date:", value=default_date, key='exp_date_input')
         expiration_date_str = expiration_date.strftime('%Y-%m-%d')
 
-        # 1A. Initial Fetch (only runs once, or if parameters change and the button is pressed)
-        # The first call fetches data and populates session_state
+        # 1A. Get the current state (This fetches initial data if session_state is empty)
         current_data = init_or_fetch_data(ticker_symbol, K, expiration_date_str, option_type, refresh=False)
         
         st.markdown("---")
         st.header("2. Input Parameters")
 
-        # Core BSM Inputs. KEY FIX: The value parameter now MUST pull directly from 
-        # the session state to update when rerun() is called.
+        # Core BSM Inputs (Pulling from session state)
         S = st.number_input("Underlying Price (S):", value=current_data['S'], format="%.2f", key='s_input')
         r_percent = st.number_input("Risk-free Rate (%r):", value=current_data['r_percent'], format="%.2f", key='r_input')
         
-        # FIX: The sigma input now pulls its value from the session state
-        sigma_percent = st.number_input("Volatility (%Sigma):", value=current_data['sigma_percent'], format="%.2f", key='sigma_input')
+        # FIX: Dynamic key for the Volatility input
+        sigma_percent = st.number_input(
+            "Volatility (%Sigma):", 
+            value=current_data['sigma_percent'], 
+            format="%.2f", 
+            key=f"sigma_input_{st.session_state.sigma_key_version}" # Key changes on update
+        )
         
         q_percent = st.number_input("Dividend Yield (%q):", value=current_data['q_percent'], format="%.2f", key='q_input')
         
         # --- UPDATE BUTTON ---
         if st.button("🔄 Update Input Parameter Data"):
-            # Fetch new data for the currently configured option and set refresh=True
             new_data = fetch_all_market_data(ticker_symbol, K, expiration_date_str, option_type)
             
-            # Update the session state with the new fetched data (This triggers the update of the inputs)
+            # Update the session state with the new fetched data
             st.session_state.data_state = {
                 'S': round(new_data['S'], 2),
                 'r_percent': round(new_data['r_percent'], 2),
@@ -276,10 +272,13 @@ def main():
                 'market_price': round(new_data['market_price'], 2),
                 'error': new_data['error']
             }
+            
+            # CRITICAL FIX: Increment the version number to force Streamlit to redraw the sigma input
+            st.session_state.sigma_key_version += 1 
 
             if st.session_state.data_state['error']:
                  st.error(f"Error: {st.session_state.data_state['error']}")
-            st.rerun() # Rerunning will force the inputs to use the new session state values
+            st.rerun() 
 
         st.markdown("---")
         st.header("3. Current Market Price")
@@ -312,7 +311,7 @@ def main():
 
     # ---------------------------------------------
     # Main Calculation Section
-    # ---------------------------------------------
+    ---------------------------------------------
     st.header("2. Main Calculation")
     
     col1, col2 = st.columns(2)
@@ -347,7 +346,7 @@ def main():
     
     # ---------------------------------------------
     # Solver/Simulator Section (Tabs for clean UI)
-    # ---------------------------------------------
+    ---------------------------------------------
     
     st.header("3. Option Solvers & Simulators")
     tab2, tab3 = st.tabs(["DTE Simulator", "Implied DTE Solver"])
@@ -366,7 +365,7 @@ def main():
             st.success(f"💰 Simulated Price: **${sim_price:.2f}**")
             st.markdown(f"This DTE ({target_dte} days) corresponds to **{sim_date.strftime('%Y-%m-%d')}**.")
             st.markdown(f"**Prob. ITM:** {sim_greeks['Prob_ITM'] * 100.0:.2f}% | **POT:** {sim_pot * 100.0:.2f}%")
-            st.markdown(f"**Theta (Daily):** {sim_greeks['Theta']:.4f}")
+            st.markdown(f"**Θ Theta (Daily):** {sim_greeks['Theta']:.4f}")
             
     # --- Tab 3: Implied DTE Solver (Price -> Days) ---
     with tab3:
@@ -386,7 +385,7 @@ def main():
 
     # ---------------------------------------------
     # 4. Plotting Section
-    # ---------------------------------------------
+    ---------------------------------------------
     st.markdown("---")
     st.header("4. Theoretical Price vs. Underlying")
     
