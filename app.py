@@ -155,13 +155,11 @@ def get_current_data(ticker_symbol):
         # FIX: Robust Dividend Yield Fetching
         fetched_div_yield = price_info.get('dividendYield')
         if fetched_div_yield is not None:
-            # Ensure it's not a tiny number or a huge percent > 100%
             if fetched_div_yield > 0.001 and fetched_div_yield < 1.0: 
                 div_yield_decimal = fetched_div_yield
             elif fetched_div_yield >= 1.0 and fetched_div_yield <= 100.0:
                 # If it's reported as a percentage (e.g., 2.5), convert it
                 div_yield_decimal = fetched_div_yield / 100.0
-        # If fetching fails or is 0, we keep the default of 0.015 (1.5%)
         
         
         # 3. Fetch Option IV directly from the chain (FIXED FOR ROBUSTNESS)
@@ -196,9 +194,9 @@ def get_current_data(ticker_symbol):
 # 3. STREAMLIT APPLICATION LAYOUT & LOGIC
 # ==============================================================================
 
-# Use a Streamlit function to memoize (cache) data fetching for speed
-@st.cache_data
-def get_initial_data(ticker):
+# FIX 1: Add TTL and argument for cache busting
+@st.cache_data(ttl=3600)
+def get_initial_data(ticker, force_refresh):
     """Initial fetch for S, q, sigma, and r."""
     return get_current_data(ticker)
 
@@ -214,8 +212,13 @@ def main():
         
         ticker_symbol = st.text_input("Stock Symbol:", "SPY").upper()
         
-        # Fetch data (cached) - NOTE THE 4 RETURN VALUES!
-        current_price, current_yield_decimal, default_iv_decimal, current_rfr_percent = get_initial_data(ticker_symbol)
+        # FIX 2: Add refresh button logic
+        st.markdown("---")
+        refresh_button = st.button("🔄 Refresh Market Data")
+        refresh_key = datetime.datetime.now() if refresh_button else None
+        
+        # Fetch data (cached) - PASS THE REFRESH KEY
+        current_price, current_yield_decimal, default_iv_decimal, current_rfr_percent = get_initial_data(ticker_symbol, refresh_key)
         
         # Display/Input Parameters
         S = st.number_input("Underlying Price (S):", value=round(current_price, 2), format="%.2f", disabled=True)
@@ -236,7 +239,7 @@ def main():
         q_percent = st.number_input("Dividend Yield (%q):", value=round(current_yield_decimal * 100, 2), format="%.2f")
         option_type = st.radio("Option Type:", ['call', 'put'], horizontal=True)
 
-    # --- Calculations ---
+    # --- Calculations (Unchanged) ---
     
     # Convert inputs to decimals and days-to-expiration
     T_delta = expiration_date - datetime.date.today()
