@@ -303,7 +303,7 @@ def main():
     price = black_scholes_price(S, K, T_days, r_decimal, sigma_decimal_input, q_decimal, option_type)
 
     # ---------------------------------------------
-    # Main Calculation Section (Updated Display)
+    # Main Calculation Section
     # ---------------------------------------------
     st.header("2. Main Calculation")
     
@@ -364,7 +364,10 @@ def main():
             sim_date = datetime.date.today() + datetime.timedelta(days=target_dte)
             
             st.success(f"💰 Simulated Price: **${sim_price:.2f}**")
-            st.markdown(f"This DTE ({target_dte} days) corresponds to **{sim_date.strftime('%Y-%m-%d')}**.")
+            
+            # Final fix: Clarified DTE output text
+            st.markdown(f"The date corresponding to **{target_dte} DTE** from today is **{sim_date.strftime('%Y-%m-%d')}**.")
+            
             st.markdown(f"**Prob. ITM:** {sim_greeks['Prob_ITM'] * 100.0:.2f}% | **POT:** {sim_pot * 100.0:.2f}%")
             st.markdown(f"**Θ Theta (Daily):** {sim_greeks['Theta']:.4f}")
             
