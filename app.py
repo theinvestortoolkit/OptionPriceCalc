@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 # 1. CORE BLACK-SCHOLES-MERTON (BSM) FUNCTIONS
 # ==============================================================================
 
-# --- BSM Price Function (Unchanged) ---
+# --- BSM Price Function ---
 def black_scholes_price(S, K, T, r, sigma, q=0.0, option_type='call'):
     """Calculates the Black-Scholes-Merton theoretical price."""
     try:
@@ -38,7 +38,7 @@ def black_scholes_price(S, K, T, r, sigma, q=0.0, option_type='call'):
     except (ZeroDivisionError, ValueError):
         return 0.0
 
-# --- BSM Greeks Function (Unchanged) ---
+# --- BSM Greeks Function ---
 def black_scholes_greeks(S, K, T, r, sigma, q=0.0, option_type='call'):
     """Calculates the Greeks and Probability ITM."""
     T_years = T / 365.0
@@ -73,7 +73,7 @@ def black_scholes_greeks(S, K, T, r, sigma, q=0.0, option_type='call'):
         'Vega': vega, 'Rho': rho, 'Prob_ITM': prob_itm
     }
 
-# --- Probability of Touch (POT) Function (Unchanged) ---
+# --- Probability of Touch (POT) Function ---
 def calculate_probability_of_touch(S, K, T, r, sigma, q=0.0):
     """Calculates the Probability of the Stock Price touching the Strike K before time T."""
     try:
@@ -92,7 +92,7 @@ def calculate_probability_of_touch(S, K, T, r, sigma, q=0.0):
     except Exception:
         return 1.0 
 
-# --- Implied Volatility Solver (Unchanged) ---
+# --- Implied Volatility Solver ---
 def calculate_implied_volatility(S, K, T, r, market_price, q=0.0, option_type='call'):
     """Calculates the Implied Volatility (IV)."""
     def price_difference(sigma):
@@ -105,7 +105,7 @@ def calculate_implied_volatility(S, K, T, r, market_price, q=0.0, option_type='c
     except Exception:
         return 0.20
 
-# --- Implied Time Solver (Unchanged) ---
+# --- Implied Time Solver ---
 def calculate_implied_time(S, K, sigma, r, market_price, q=0.0, option_type='call'):
     """Calculates the Implied Days to Expiration (T in days)."""
     def price_difference(T_days):
@@ -131,10 +131,10 @@ def find_next_3rd_friday(min_days=30):
         exp_date = (exp_date.replace(day=1) + relativedelta(months=1)).replace(day=1) + relativedelta(weekday=FR(3))
     return exp_date.strftime('%Y-%m-%d'), exp_date
 
-# --- NEW/UPDATED CORE FETCHING FUNCTION ---
+# --- CORE FETCHING FUNCTION (FIXED IV) ---
 def get_current_data(ticker_symbol):
     """Fetches stock price, RFR, and calculates initial IV."""
-    default_iv_decimal = 0.20
+    default_iv_decimal = 0.20 # Fallback default
     rfr_percent = 4.0
     price = 100.0
     div_yield_decimal = 0.015
@@ -154,8 +154,7 @@ def get_current_data(ticker_symbol):
         if div_yield_decimal is None or div_yield_decimal > 1.0: 
             div_yield_decimal = 0.015 
             
-        # 3. Fetch Option Price and Calculate IV
-        # We target the default expiry date for the IV calculation
+        # 3. Fetch Option IV directly from the chain (CORRECTED BLOCK)
         _, default_exp_date_obj = find_next_3rd_friday(min_days=30)
         default_exp_date_str = default_exp_date_obj.strftime('%Y-%m-%d')
         
@@ -167,25 +166,16 @@ def get_current_data(ticker_symbol):
             calls['Strike_Diff'] = np.abs(calls['strike'] - price)
             atm_call = calls.loc[calls['Strike_Diff'].idxmin()]
             
-            market_price = (atm_call['bid'] + atm_call['ask']) / 2.0
-            strike_price = atm_call['strike']
+            # CRITICAL FIX: Use the impliedVolatility column directly
+            implied_vol = atm_call.get('impliedVolatility')
             
-            # Calculate T_days for the default option
-            T_delta = default_exp_date_obj - datetime.date.today()
-            T_days = max(1, T_delta.days)
+            # Ensure the value is valid and use it
+            if implied_vol is not None and implied_vol > 0.01:
+                default_iv_decimal = implied_vol
             
-            r_decimal = rfr_percent / 100.0
-            q_decimal = div_yield_decimal
-            
-            # Calculate the IV using the fetched market data
-            default_iv_decimal = calculate_implied_volatility(
-                S=price, K=strike_price, T=T_days, r=r_decimal, 
-                market_price=market_price, q=q_decimal, option_type='call'
-            )
-            
-    except Exception as e:
-        # st.warning(f"Error fetching options data for IV: {e}") # Optional debug line
-        pass # Keep defaults if fetching fails
+    except Exception:
+        # If any fetching fails, the defaults (20% IV, 4.0% RFR) are used
+        pass 
 
     # Return 4 values: Price, Dividend Yield (decimal), Calculated IV (decimal), RFR (percentage)
     return float(price), div_yield_decimal, default_iv_decimal, rfr_percent
