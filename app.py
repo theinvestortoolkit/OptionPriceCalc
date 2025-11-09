@@ -131,14 +131,15 @@ def find_next_3rd_friday(min_days=30):
         exp_date = (exp_date.replace(day=1) + relativedelta(months=1)).replace(day=1) + relativedelta(weekday=FR(3))
     return exp_date.strftime('%Y-%m-%d'), exp_date
 
-# --- CORE FETCHING FUNCTION (Reverts to fetching IV once for default) ---
+# --- CORE FETCHING FUNCTION (Updated to fetch default option price) ---
 def get_current_data(ticker_symbol):
-    """Fetches stock price, RFR, dividend yield, and default IV."""
+    """Fetches stock price, RFR, dividend yield, default IV, and default ATM price."""
     # Set fallback defaults
     default_iv_decimal = 0.20 
     rfr_percent = 4.0
     price = 100.0
     div_yield_decimal = 0.015
+    default_price = 0.50  # NEW FALLBACK PRICE
     
     try:
         # 1. Fetch RFR (^IRX)
@@ -161,7 +162,7 @@ def get_current_data(ticker_symbol):
                 div_yield_decimal = fetched_div_yield / 100.0
         
         
-        # 3. Fetch Option IV directly from the chain for the next 3rd Friday
+        # 3. Fetch Option IV and Price for the next 3rd Friday
         _, default_exp_date_obj = find_next_3rd_friday(min_days=30)
         default_exp_date_str = default_exp_date_obj.strftime('%Y-%m-%d')
         
@@ -174,15 +175,22 @@ def get_current_data(ticker_symbol):
             
             for index, option in calls.iterrows():
                 implied_vol = option.get('impliedVolatility')
+                bid = option.get('bid')
+                ask = option.get('ask')
+                
+                # Use IV if it's available and realistic (e.g., above 1%)
                 if implied_vol is not None and implied_vol > 0.01 and implied_vol < 5.0:
                     default_iv_decimal = implied_vol
-                    break 
+                    # Use the mid-price (midpoint between bid and ask) as the default market price
+                    if bid is not None and ask is not None and bid > 0 and ask > 0:
+                        default_price = (bid + ask) / 2.0
+                    break # Exit loop once a valid IV and Price are found
             
     except Exception:
         pass 
 
-    # Return 4 values: Price, Dividend Yield (decimal), Calculated IV (decimal), RFR (percentage)
-    return float(price), div_yield_decimal, default_iv_decimal, rfr_percent
+    # Return 5 values: Price, Div Yield, Default IV, RFR, Default ATM Price
+    return float(price), div_yield_decimal, default_iv_decimal, rfr_percent, default_price
 
 # ==============================================================================
 # 3. STREAMLIT APPLICATION LAYOUT & LOGIC
@@ -191,7 +199,7 @@ def get_current_data(ticker_symbol):
 # Cache initial data fetching
 @st.cache_data(ttl=3600)
 def get_initial_data(ticker, force_refresh):
-    """Initial fetch for S, q, sigma (default), and r."""
+    """Initial fetch for S, q, sigma (default), r, and default price."""
     return get_current_data(ticker)
 
 def main():
@@ -208,11 +216,11 @@ def main():
         
         # Cache management button
         st.markdown("---")
-        refresh_button = st.button("🔄 Refresh Market Data (S, RFR, Default IV)")
+        refresh_button = st.button("🔄 Refresh Market Data (S, RFR, Default IV & Price)")
         refresh_key = datetime.datetime.now() if refresh_button else None
         
         # Fetch data (cached)
-        current_price, current_yield_decimal, default_iv_decimal, current_rfr_percent = get_initial_data(ticker_symbol, refresh_key)
+        current_price, current_yield_decimal, default_iv_decimal, current_rfr_percent, default_price = get_initial_data(ticker_symbol, refresh_key)
         
         # Display/Input Parameters
         S = st.number_input("Underlying Price (S):", value=round(current_price, 2), format="%.2f", disabled=True)
@@ -225,8 +233,8 @@ def main():
 
         st.markdown("---")
 
-        # NEW: Market Price Input (Crucial for solving the option's true IV)
-        market_price = st.number_input("Current Market Price (C/P):", value=0.50, min_value=0.01, format="%.2f")
+        # NEW: Market Price Input uses the fetched default_price
+        market_price = st.number_input("Current Market Price (C/P):", value=round(default_price, 2), min_value=0.01, format="%.2f")
 
         # RFR NOW USES THE FETCHED VALUE:
         r_percent = st.number_input("Risk-Free Rate (%r):", value=round(current_rfr_percent, 2), format="%.2f")
@@ -248,10 +256,11 @@ def main():
     # Calculate the actual IV based on the Market Price input
     # If Market Price is available, we use that to solve for IV (The contract's true IV)
     if market_price > 0.01:
+        # Note: We use the market_price entered by the user (defaulting to fetched ATM price)
         solved_iv_decimal = calculate_implied_volatility(S, K, T_days, r_decimal, market_price, q_decimal, option_type)
         sigma_decimal = solved_iv_decimal
     else:
-        # If no market price, use the default ATM IV provided by yfinance (user input)
+        # Fallback to the default ATM IV provided by yfinance (user input)
         sigma_decimal = default_sigma_percent / 100.0
 
     # Perform the main calculation using the determined sigma
@@ -333,7 +342,6 @@ def main():
     st.header("4. Theoretical Price vs. Underlying")
     
     try:
-        # CORRECTED LINE: Ensure plt.subplots has closed parenthesis
         fig, ax = plt.subplots(figsize=(10, 6)) 
         
         S_min = max(0, S * 0.8)
