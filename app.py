@@ -76,8 +76,7 @@ def black_scholes_greeks(S, K, T, r, sigma, q=0.0, option_type='call'):
 # --- Probability of Touch (POT) Function ---
 def calculate_probability_of_touch(S, K, T, r, sigma, q=0.0, option_type='call'):
     """Calculates the Probability of the Stock Price touching the Strike K before time T.
-       This uses the formula for a single knockout barrier, setting POT to 100% if ITM/ATM.
-    """
+       Uses the formula for a single knockout barrier, setting POT to 100% if ITM/ATM."""
     try:
         T_years = T / 365.0
         
@@ -93,37 +92,31 @@ def calculate_probability_of_touch(S, K, T, r, sigma, q=0.0, option_type='call')
             
         # 3. OTM Scenario: Calculate the probability of touching the barrier K
         
-        # Define the drift factor (mu) and the POT factor (lambda or theta)
-        mu = r - q - 0.5 * sigma**2 
+        # Define the terms used in the formula
+        mu = r - q - 0.5 * sigma**2  # Drift term (without sigma)
+        sigma_sqrt_T = sigma * np.sqrt(T_years)
         
-        # Lambda is the critical term in the barrier option formula
-        lambda_val = np.sqrt(mu**2 + 2 * r * sigma**2) / sigma**2
+        # Gamma is the crucial factor that controls symmetry: gamma = 2*mu / sigma^2
+        gamma = 2 * mu / (sigma**2)
         
-        # Define d1 for the Barrier formula. 
-        # For an OTM call (K > S), we calculate the probability of moving UP to K.
-        # For an OTM put (K < S), we calculate the probability of moving DOWN to K.
-        # The direction is controlled by the sign in the argument to the norm.cdf terms.
+        # Base D1 for the barrier formula, using the distance between K and S
+        # For OTM Call (S < K) and OTM Put (S > K), the movement direction is key.
         
-        # The POT calculation uses a simplified approach where the stock must hit K.
-        
-        # Term 1: Calculate the distance term for the standard normal distribution
-        d1_barrier = (np.log(K / S) - mu * T_years) / (sigma * np.sqrt(T_years))
+        # The correct form uses the logarithm of the ratio S/K to define the distance.
+        log_ratio = np.log(S / K)
         
         if option_type == 'call':
-            # For OTM Call (S < K), the price must move up. The sign must align for movement toward K.
-            # We use the formula for a Knock-Out Call where the barrier is above S (which is K).
-            prob_touch_final = norm.cdf(d1_barrier) + \
-                               (K / S)**(2 * mu / sigma**2) * norm.cdf(d1_barrier - 2 * mu / sigma * np.sqrt(T_years))
+            # For OTM Call (S < K), log_ratio is negative. The formula requires the barrier K > S.
+            # d1 is calculated for the upward movement towards K.
+            d1 = (log_ratio + mu * T_years) / sigma_sqrt_T
         else: # Put (S > K)
-            # For OTM Put (S > K), the price must move down. 
-            # We use the formula for a Knock-Out Put where the barrier is below S (which is K).
-            prob_touch_final = norm.cdf(-d1_barrier) + \
-                               (K / S)**(2 * mu / sigma**2) * norm.cdf(-d1_barrier - 2 * mu / sigma * np.sqrt(T_years))
+            # For OTM Put (S > K), log_ratio is positive. The formula needs to reflect downward movement.
+            # By defining d1 using log_ratio, we ensure the correct sign for the downward drift.
+            d1 = (-log_ratio + mu * T_years) / sigma_sqrt_T # Correctly flips the distance term
 
-        # This simpler formula is often used for probability of touch:
-        prob_touch_final = norm.cdf(-(np.log(K/S) + (r-q-0.5*sigma**2)*T_years) / (sigma*np.sqrt(T_years))) + \
-                           (K/S)**(2*(r-q)/(sigma**2) - 1) * norm.cdf(-(np.log(K/S) + (r-q-0.5*sigma**2)*T_years) / (sigma*np.sqrt(T_years)) - 2*(r-q)/(sigma)*np.sqrt(T_years))
-
+        # The POT calculation (Probability of hitting K from the OTM side)
+        prob_touch_final = norm.cdf(d1) + \
+                           (K / S)**gamma * norm.cdf(d1 - gamma * sigma_sqrt_T)
 
         return np.clip(prob_touch_final, 0.0, 1.0)
         
