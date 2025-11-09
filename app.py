@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 # 1. CORE BLACK-SCHOLES-MERTON (BSM) FUNCTIONS
 # ==============================================================================
 
-# --- BSM Price Function ---
+# --- BSM Price Function (Unchanged) ---
 def black_scholes_price(S, K, T, r, sigma, q=0.0, option_type='call'):
     """Calculates the Black-Scholes-Merton theoretical price."""
     try:
@@ -38,7 +38,7 @@ def black_scholes_price(S, K, T, r, sigma, q=0.0, option_type='call'):
     except (ZeroDivisionError, ValueError):
         return 0.0
 
-# --- BSM Greeks Function ---
+# --- BSM Greeks Function (Unchanged) ---
 def black_scholes_greeks(S, K, T, r, sigma, q=0.0, option_type='call'):
     """Calculates the Greeks and Probability ITM."""
     T_years = T / 365.0
@@ -73,7 +73,7 @@ def black_scholes_greeks(S, K, T, r, sigma, q=0.0, option_type='call'):
         'Vega': vega, 'Rho': rho, 'Prob_ITM': prob_itm
     }
 
-# --- Probability of Touch (POT) Function ---
+# --- Probability of Touch (POT) Function (Unchanged) ---
 def calculate_probability_of_touch(S, K, T, r, sigma, q=0.0):
     """Calculates the Probability of the Stock Price touching the Strike K before time T."""
     try:
@@ -92,7 +92,7 @@ def calculate_probability_of_touch(S, K, T, r, sigma, q=0.0):
     except Exception:
         return 1.0 
 
-# --- Implied Volatility Solver ---
+# --- Implied Volatility Solver (Unchanged) ---
 def calculate_implied_volatility(S, K, T, r, market_price, q=0.0, option_type='call'):
     """Calculates the Implied Volatility (IV)."""
     def price_difference(sigma):
@@ -105,7 +105,7 @@ def calculate_implied_volatility(S, K, T, r, market_price, q=0.0, option_type='c
     except Exception:
         return 0.20
 
-# --- Implied Time Solver ---
+# --- Implied Time Solver (Unchanged) ---
 def calculate_implied_time(S, K, sigma, r, market_price, q=0.0, option_type='call'):
     """Calculates the Implied Days to Expiration (T in days)."""
     def price_difference(T_days):
@@ -119,7 +119,7 @@ def calculate_implied_time(S, K, sigma, r, market_price, q=0.0, option_type='cal
         return 365
         
 # ==============================================================================
-# 2. DATA FETCHING (RFR and Stock Price)
+# 2. DATA FETCHING (RFR, Stock Price, Option Price for IV)
 # ==============================================================================
 
 def find_next_3rd_friday(min_days=30):
@@ -131,34 +131,64 @@ def find_next_3rd_friday(min_days=30):
         exp_date = (exp_date.replace(day=1) + relativedelta(months=1)).replace(day=1) + relativedelta(weekday=FR(3))
     return exp_date.strftime('%Y-%m-%d'), exp_date
 
+# --- NEW/UPDATED CORE FETCHING FUNCTION ---
 def get_current_data(ticker_symbol):
-    """Fetches stock price and RFR using yfinance."""
+    """Fetches stock price, RFR, and calculates initial IV."""
+    default_iv_decimal = 0.20
+    rfr_percent = 4.0
+    price = 100.0
+    div_yield_decimal = 0.015
+    
     try:
-        # 1. Fetch RFR (using ^IRX for 13-week T-Bill Yield)
+        # 1. Fetch RFR (^IRX)
         rfr_ticker = yf.Ticker('^IRX')
         rfr_info = rfr_ticker.history(period="1d", interval="1m")
         if not rfr_info.empty:
             rfr_percent = rfr_info['Close'].iloc[-1]
-        else:
-            rfr_percent = 4.0 # Fallback default
         
         # 2. Fetch Stock Data
         ticker = yf.Ticker(ticker_symbol)
         price = ticker.info.get('regularMarketPrice')
         
-        # Handle dividend yield
         div_yield_decimal = ticker.info.get('dividendYield', 0.015)
         if div_yield_decimal is None or div_yield_decimal > 1.0: 
             div_yield_decimal = 0.015 
+            
+        # 3. Fetch Option Price and Calculate IV
+        # We target the default expiry date for the IV calculation
+        _, default_exp_date_obj = find_next_3rd_friday(min_days=30)
+        default_exp_date_str = default_exp_date_obj.strftime('%Y-%m-%d')
         
-        # Default IV (since real-time option IV is complex to fetch with yfinance)
-        default_iv_decimal = 0.20 
+        options_data = ticker.option_chain(default_exp_date_str)
+        calls = options_data.calls
+        
+        if not calls.empty:
+            # Find the option closest to At-The-Money (ATM)
+            calls['Strike_Diff'] = np.abs(calls['strike'] - price)
+            atm_call = calls.loc[calls['Strike_Diff'].idxmin()]
+            
+            market_price = (atm_call['bid'] + atm_call['ask']) / 2.0
+            strike_price = atm_call['strike']
+            
+            # Calculate T_days for the default option
+            T_delta = default_exp_date_obj - datetime.date.today()
+            T_days = max(1, T_delta.days)
+            
+            r_decimal = rfr_percent / 100.0
+            q_decimal = div_yield_decimal
+            
+            # Calculate the IV using the fetched market data
+            default_iv_decimal = calculate_implied_volatility(
+                S=price, K=strike_price, T=T_days, r=r_decimal, 
+                market_price=market_price, q=q_decimal, option_type='call'
+            )
+            
+    except Exception as e:
+        # st.warning(f"Error fetching options data for IV: {e}") # Optional debug line
+        pass # Keep defaults if fetching fails
 
-        # Return 4 values: Price, Dividend Yield (decimal), Default IV (decimal), RFR (percentage)
-        return float(price), div_yield_decimal, default_iv_decimal, rfr_percent
-    except Exception:
-        # Fallback values if YFinance fails completely
-        return 100.0, 0.015, 0.20, 4.0 
+    # Return 4 values: Price, Dividend Yield (decimal), Calculated IV (decimal), RFR (percentage)
+    return float(price), div_yield_decimal, default_iv_decimal, rfr_percent
 
 # ==============================================================================
 # 3. STREAMLIT APPLICATION LAYOUT & LOGIC
@@ -180,7 +210,6 @@ def main():
     with st.sidebar:
         st.header("1. Core Inputs")
         
-        # Ticker input and fetching current price/defaults
         ticker_symbol = st.text_input("Stock Symbol:", "SPY").upper()
         
         # Fetch data (cached) - NOTE THE 4 RETURN VALUES!
@@ -188,7 +217,7 @@ def main():
         
         # Display/Input Parameters
         S = st.number_input("Underlying Price (S):", value=round(current_price, 2), format="%.2f", disabled=True)
-        K = st.number_input("Strike Price (K):", value=round(current_price, 0), format="%.2f")
+        K = st.number_input("Strike Price (K):", value=round(current_price, 0), format="%.2f") # Default strike is ATM
         
         # Default date calculation
         _, default_date = find_next_3rd_friday(min_days=30)
@@ -197,7 +226,10 @@ def main():
         # Other inputs
         # RFR NOW USES THE FETCHED VALUE:
         r_percent = st.number_input("Risk-Free Rate (%r):", value=round(current_rfr_percent, 2), format="%.2f")
+        
+        # IV NOW USES THE CALCULATED IV (or the 20% fallback)
         sigma_percent = st.number_input("Volatility (%Sigma):", value=round(default_iv_decimal * 100, 2), format="%.2f")
+        
         q_percent = st.number_input("Dividend Yield (%q):", value=round(current_yield_decimal * 100, 2), format="%.2f")
         option_type = st.radio("Option Type:", ['call', 'put'], horizontal=True)
 
@@ -296,18 +328,15 @@ def main():
     st.header("4. Theoretical Price vs. Underlying")
     
     try:
-        # Define the range of underlying prices for the plot
         S_min = max(0, S * 0.8)
         S_max = S * 1.2
         S_range = np.linspace(S_min, S_max, 100)
         
-        # Calculate option prices for the range
         prices_over_range = [
             black_scholes_price(s, K, T_days, r_decimal, sigma_decimal, q_decimal, option_type)
             for s in S_range
         ]
         
-        # Create the figure object (Crucial for Streamlit)
         fig, ax = plt.subplots(figsize=(10, 6))
         
         ax.plot(S_range, prices_over_range, label=f'Theoretical Price ({option_type.upper()})', color='darkgreen', linewidth=3)
@@ -320,7 +349,6 @@ def main():
         ax.grid(True, linestyle=':', alpha=0.7)
         ax.legend()
         
-        # Display the Matplotlib figure using Streamlit's function
         st.pyplot(fig)
         
     except Exception as e:
