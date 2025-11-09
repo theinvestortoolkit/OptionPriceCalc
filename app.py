@@ -231,8 +231,10 @@ def main():
 
     # --- Sidebar Inputs & Ticker Handling ---
     with st.sidebar:
-        st.header("1. Core Inputs")
+        # CONSOLIDATED HEADER
+        st.header("⚙️ Option Inputs")
         
+        st.subheader("Core Option Details")
         ticker_symbol = st.text_input("Stock Symbol:", default_ticker).upper()
         option_type = st.radio("Option Type:", ['call', 'put'], horizontal=True)
         K = st.number_input("Strike Price (K):", value=default_strike, format="%.2f", key='k_input') 
@@ -243,7 +245,7 @@ def main():
         current_data = init_or_fetch_data(ticker_symbol, K, expiration_date_str, option_type, refresh=False)
         
         st.markdown("---")
-        st.header("2. Input Parameters")
+        st.subheader("BSM Parameters")
 
         # Core BSM Inputs (Pulling from session state)
         S = st.number_input("Underlying Price (S):", value=current_data['S'], format="%.2f", key='s_input')
@@ -314,14 +316,14 @@ def main():
     with col1:
         st.subheader(f"Price Comparison ({option_type.upper()})")
         
-        # NEW: Current Market Price (Moved from Sidebar)
+        # Current Market Price
         st.metric(
             label=f"Current Market Price ({option_type.upper()})",
             value=f"${market_price_current:.2f}",
             delta_color="off"
         )
         
-        # Estimated Theoretical Price (Your Theo Price)
+        # Estimated Theoretical Price
         st.metric(
             label="Theoretical Price (using Input Volatility)", 
             value=f"${price:.2f}",
