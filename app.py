@@ -339,7 +339,7 @@ def main():
     # ---------------------------------------------
     # Main Calculation Section
     # ---------------------------------------------
-    st.header("2. Main Calculation")
+    st.header("1. Main Calculation")
     
     col1, col2 = st.columns(2)
     
@@ -384,7 +384,7 @@ def main():
     # Solver/Simulator Section (Tabs for clean UI)
     # ---------------------------------------------
     
-    st.header("3. Option Solvers & Simulators")
+    st.header("2. Option Solvers & Simulators")
     tab2, tab3 = st.tabs(["DTE Simulator", "Implied DTE Solver"])
 
     # --- Tab 2: DTE Simulator (Days -> Price & Greeks) ---
@@ -438,7 +438,7 @@ def main():
     # 4. Plotting Section
     # ---------------------------------------------
     st.markdown("---")
-    st.header("4. Theoretical Price vs. Underlying")
+    st.header("3. Theoretical Price vs. Underlying")
     
     try:
         fig, ax = plt.subplots(figsize=(10, 6)) 
