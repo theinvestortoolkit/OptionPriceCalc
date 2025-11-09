@@ -226,6 +226,7 @@ def main():
     st.markdown("---")
     
     default_ticker = "SPY"
+    # Note: This is now Nov 9, 2025. Next 3rd Friday is Dec 19, 2025 (40 days)
     _, default_date = find_next_3rd_friday(min_days=30)
     default_strike = 450.0 
 
@@ -355,18 +356,26 @@ def main():
     # --- Tab 2: DTE Simulator (Days -> Price & Greeks) ---
     with tab2:
         st.subheader("Simulate Price at Target DTE")
-        target_dte = st.number_input("Target DTE (Days):", min_value=1, value=30, step=1)
+        
+        # Ensure target DTE is less than or equal to current DTE
+        max_dte = T_days if T_days > 1 else 1 
+        target_dte = st.number_input("Target DTE (Days Remaining):", min_value=1, max_value=max_dte, value=min(30, max_dte), step=1)
+        
         if st.button("Simulate Price at DTE"):
+            # Calculate the price using the Target DTE
             sim_price = black_scholes_price(S, K, target_dte, r_decimal, sigma_decimal_input, q_decimal, option_type)
             sim_greeks = black_scholes_greeks(S, K, target_dte, r_decimal, sigma_decimal_input, q_decimal, option_type)
             sim_pot = calculate_probability_of_touch(S, K, target_dte, r_decimal, sigma_decimal_input, q_decimal)
             
-            sim_date = datetime.date.today() + datetime.timedelta(days=target_dte)
+            # CORRECTED LOGIC: Calculate the date when the option will have target_dte remaining.
+            # Days passed since today = T_days (current DTE) - target_dte
+            days_passed = T_days - target_dte
+            sim_date = datetime.date.today() + datetime.timedelta(days=days_passed)
             
             st.success(f"💰 Simulated Price: **${sim_price:.2f}**")
             
-            # Final fix: Clarified DTE output text
-            st.markdown(f"The date corresponding to **{target_dte} DTE** from today is **{sim_date.strftime('%Y-%m-%d')}**.")
+            # Updated text to reflect simulation date logic
+            st.markdown(f"The option will have **{target_dte} days remaining** on **{sim_date.strftime('%Y-%m-%d')}**.")
             
             st.markdown(f"**Prob. ITM:** {sim_greeks['Prob_ITM'] * 100.0:.2f}% | **POT:** {sim_pot * 100.0:.2f}%")
             st.markdown(f"**Θ Theta (Daily):** {sim_greeks['Theta']:.4f}")
