@@ -5,9 +5,10 @@ import yfinance as yf
 import datetime
 from dateutil.relativedelta import relativedelta, FR
 from scipy.optimize import brentq
+import matplotlib.pyplot as plt # Added to top for cleaner structure
 
 # ==============================================================================
-# 1. CORE BLACK-SCHOLES-MERTON (BSM) FUNCTIONS (From Colab Cell 1)
+# 1. CORE BLACK-SCHOLES-MERTON (BSM) FUNCTIONS
 # ==============================================================================
 
 # --- BSM Price Function ---
@@ -92,7 +93,7 @@ def calculate_probability_of_touch(S, K, T, r, sigma, q=0.0):
     except Exception:
         return 1.0 
 
-# --- Implied Volatility Solver (Unchanged) ---
+# --- Implied Volatility Solver ---
 def calculate_implied_volatility(S, K, T, r, market_price, q=0.0, option_type='call'):
     """Calculates the Implied Volatility (IV)."""
     def price_difference(sigma):
@@ -100,13 +101,12 @@ def calculate_implied_volatility(S, K, T, r, market_price, q=0.0, option_type='c
         return black_scholes_price(S, K, T, r, sigma, q, option_type) - market_price
         
     try:
-        # Use brentq to find the IV
         implied_volatility = brentq(price_difference, 0.001, 5.0)
         return implied_volatility
     except Exception:
         return 0.20
 
-# --- Implied Time Solver (Unchanged) ---
+# --- Implied Time Solver ---
 def calculate_implied_time(S, K, sigma, r, market_price, q=0.0, option_type='call'):
     """Calculates the Implied Days to Expiration (T in days)."""
     def price_difference(T_days):
@@ -119,7 +119,7 @@ def calculate_implied_time(S, K, sigma, r, market_price, q=0.0, option_type='cal
     except Exception:
         return 365
         
-# --- Data Fetching (Unchanged) ---
+# --- Data Fetching ---
 def find_next_3rd_friday(min_days=30):
     today = datetime.date.today()
     exp_date = today.replace(day=1) + relativedelta(weekday=FR(3))
@@ -130,14 +130,12 @@ def find_next_3rd_friday(min_days=30):
     return exp_date.strftime('%Y-%m-%d'), exp_date
 
 def get_current_data(ticker_symbol):
-    # This simplified version just gets the current price and returns defaults for yield/IV
     try:
         ticker = yf.Ticker(ticker_symbol)
         price = ticker.info.get('regularMarketPrice')
         div_yield_decimal = ticker.info.get('dividendYield', 0.015)
         if div_yield_decimal > 1.0: div_yield_decimal /= 100.0
         
-        # Default IV is typically fetched from a longer loop, here we use a common default
         default_iv_decimal = 0.20 
 
         return float(price), div_yield_decimal, default_iv_decimal
@@ -164,7 +162,6 @@ def main():
     with st.sidebar:
         st.header("1. Core Inputs")
         
-        # Ticker input and fetching current price/defaults
         ticker_symbol = st.text_input("Stock Symbol:", "SPY").upper()
         
         # Fetch data (cached)
@@ -200,14 +197,13 @@ def main():
     
     col1, col2 = st.columns(2)
     
+    # Perform main calculation
+    price = black_scholes_price(S, K, T_days, r_decimal, sigma_decimal, q_decimal, option_type)
+    greeks = black_scholes_greeks(S, K, T_days, r_decimal, sigma_decimal, q_decimal, option_type)
+    pot = calculate_probability_of_touch(S, K, T_days, r_decimal, sigma_decimal, q_decimal)
+
     with col1:
         st.subheader(f"Theoretical Price ({option_type.upper()})")
-        
-        # Perform main calculation
-        price = black_scholes_price(S, K, T_days, r_decimal, sigma_decimal, q_decimal, option_type)
-        greeks = black_scholes_greeks(S, K, T_days, r_decimal, sigma_decimal, q_decimal, option_type)
-        pot = calculate_probability_of_touch(S, K, T_days, r_decimal, sigma_decimal, q_decimal)
-
         st.metric(label="Estimated Price", value=f"${price:.2f}")
         st.info(f"Days to Expiration (DTE): **{T_days}**")
 
@@ -273,6 +269,44 @@ def main():
             else:
                  st.warning("Please enter a Price to Infer DTE > $0.01.")
 
+    # ---------------------------------------------
+    # 4. Plotting Section
+    # ---------------------------------------------
+    st.markdown("---")
+    st.header("4. Theoretical Price vs. Underlying")
+    
+    try:
+        # Define the range of underlying prices for the plot
+        S_min = max(0, S * 0.8)
+        S_max = S * 1.2
+        S_range = np.linspace(S_min, S_max, 100)
+        
+        # Calculate option prices for the range
+        prices_over_range = [
+            black_scholes_price(s, K, T_days, r_decimal, sigma_decimal, q_decimal, option_type)
+            for s in S_range
+        ]
+        
+        # Create the figure object (Crucial for Streamlit)
+        fig, ax = plt.subplots(figsize=(10, 6))
+        
+        ax.plot(S_range, prices_over_range, label=f'Theoretical Price ({option_type.upper()})', color='darkgreen', linewidth=3)
+        ax.axvline(K, color='blue', linestyle='-.', alpha=0.6, label='Strike Price (K)')
+        ax.axvline(S, color='red', linestyle='--', alpha=0.6, label='Current Stock Price')
+        ax.plot(S, price, 'o', color='red', markersize=8, label=f'Price: ${price:.2f}')
+        ax.set_title(f'{option_type.upper()} Price vs. Underlying Price (IV: {sigma_percent:.2f}%)')
+        ax.set_xlabel('Underlying Price (S)')
+        ax.set_ylabel('Option Theoretical Value ($)')
+        ax.grid(True, linestyle=':', alpha=0.7)
+        ax.legend()
+        
+        # Display the Matplotlib figure using Streamlit's function
+        st.pyplot(fig)
+        
+    except Exception as e:
+        st.error(f"An error occurred during plotting: {e}")
+    
+    st.markdown("---") 
 
 if __name__ == "__main__":
     main()
