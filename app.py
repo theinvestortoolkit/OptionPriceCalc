@@ -131,114 +131,90 @@ def find_next_3rd_friday(min_days=30):
         exp_date = (exp_date.replace(day=1) + relativedelta(months=1)).replace(day=1) + relativedelta(weekday=FR(3))
     return exp_date.strftime('%Y-%m-%d'), exp_date
 
-# --- CORE FETCHING FUNCTION (Initial data fetch for S, RFR, Q, and default ATM option) ---
-def get_current_data(ticker_symbol):
-    """Fetches stock price, RFR, dividend yield, default IV, and default ATM price."""
-    # Set fallback defaults
-    default_iv_decimal = 0.20 
-    rfr_percent = 4.0
-    price = 100.0
-    div_yield_decimal = 0.015
-    default_price = 0.50  
+# --- Fetch ALL Market Data for the specified Ticker, Strike, Expiry, and Type ---
+def fetch_all_market_data(ticker_symbol, strike, expiration_date_str, option_type):
+    """Fetches S, RFR, Q, and the specific option's IV and Price."""
+    
+    # Fallback defaults
+    data = {
+        'S': 100.0,
+        'r_percent': 4.0,
+        'q_percent': 1.5,
+        'sigma_decimal': 0.20,
+        'market_price': 0.50,
+        'error': False
+    }
     
     try:
         # 1. Fetch RFR (^IRX)
         rfr_ticker = yf.Ticker('^IRX')
         rfr_info = rfr_ticker.history(period="1d", interval="1m")
         if not rfr_info.empty:
-            rfr_percent = rfr_info['Close'].iloc[-1]
+            data['r_percent'] = rfr_info['Close'].iloc[-1]
         
-        # 2. Fetch Stock Data
+        # 2. Fetch Stock Data (S and Q)
         ticker = yf.Ticker(ticker_symbol)
         price_info = ticker.info
-        price = price_info.get('regularMarketPrice', 100.0)
+        data['S'] = price_info.get('regularMarketPrice', 100.0)
         
-        # Robust Dividend Yield Fetching
         fetched_div_yield = price_info.get('dividendYield')
         if fetched_div_yield is not None:
-            if fetched_div_yield > 0.001 and fetched_div_yield < 1.0: 
-                div_yield_decimal = fetched_div_yield
-            elif fetched_div_yield >= 1.0 and fetched_div_yield <= 100.0:
-                div_yield_decimal = fetched_div_yield / 100.0
+            if 0.001 < fetched_div_yield < 1.0: 
+                data['q_percent'] = fetched_div_yield * 100.0
+            elif 1.0 <= fetched_div_yield <= 100.0:
+                data['q_percent'] = fetched_div_yield
         
-        # 3. Fetch Option IV and Price for the next 3rd Friday (ATM Call)
-        _, default_exp_date_obj = find_next_3rd_friday(min_days=30)
-        default_exp_date_str = default_exp_date_obj.strftime('%Y-%m-%d')
+        # 3. Fetch Option IV and Price
+        options_data = ticker.option_chain(expiration_date_str)
         
-        options_data = ticker.option_chain(default_exp_date_str)
-        calls = options_data.calls
-        
-        if not calls.empty:
-            calls['Strike_Diff'] = np.abs(calls['strike'] - price)
-            calls = calls.sort_values(by='Strike_Diff')
-            
-            for index, option in calls.iterrows():
+        contracts = options_data.calls if option_type == 'call' else options_data.puts
+
+        if not contracts.empty:
+            # Find the row that matches the strike price exactly
+            target_contract = contracts[contracts['strike'] == strike]
+
+            if not target_contract.empty:
+                option = target_contract.iloc[0]
+                
+                # Fetch IV
                 implied_vol = option.get('impliedVolatility')
+                if implied_vol is not None and implied_vol > 0.01 and implied_vol < 5.0:
+                    data['sigma_decimal'] = implied_vol
+                    
+                # Fetch Price
                 bid = option.get('bid')
                 ask = option.get('ask')
                 
-                if implied_vol is not None and implied_vol > 0.01 and implied_vol < 5.0:
-                    default_iv_decimal = implied_vol
-                    if bid is not None and ask is not None and bid > 0 and ask > 0:
-                        default_price = (bid + ask) / 2.0
-                    break 
-            
-    except Exception:
-        pass 
-
-    # Return 5 values: Price, Div Yield, Default IV, RFR, Default ATM Price
-    return float(price), div_yield_decimal, default_iv_decimal, rfr_percent, default_price
-
-# --- Function to fetch market data for a SPECIFIC option contract ---
-def get_specific_option_data(ticker_symbol, strike, expiration_date_str, option_type, current_S):
-    default_price = 0.50
-    default_iv_decimal = 0.20
-    
-    try:
-        ticker = yf.Ticker(ticker_symbol)
-        options_data = ticker.option_chain(expiration_date_str)
-        
-        if option_type == 'call':
-            contracts = options_data.calls
+                if bid is not None and ask is not None and bid > 0 and ask > 0:
+                    data['market_price'] = (bid + ask) / 2.0
+            else:
+                 data['error'] = f"Option K=${strike} not found for {expiration_date_str}."
         else:
-            contracts = options_data.puts
+             data['error'] = f"No option chain found for {expiration_date_str}."
+            
+    except Exception as e:
+        data['error'] = f"Data fetch error: {e}" 
 
-        if contracts.empty:
-            return default_price, default_iv_decimal
-        
-        # Find the row that matches the strike price exactly
-        target_contract = contracts[contracts['strike'] == strike]
-
-        if not target_contract.empty:
-            option = target_contract.iloc[0]
-            
-            # Fetch IV
-            implied_vol = option.get('impliedVolatility')
-            if implied_vol is not None and implied_vol > 0.01 and implied_vol < 5.0:
-                default_iv_decimal = implied_vol
-                
-            # Fetch Price
-            bid = option.get('bid')
-            ask = option.get('ask')
-            
-            if bid is not None and ask is not None and bid > 0 and ask > 0:
-                default_price = (bid + ask) / 2.0
-            
-    except Exception:
-        # Fallback to defaults on any error
-        pass
-        
-    return default_price, default_iv_decimal
+    return data
 
 # ==============================================================================
 # 3. STREAMLIT APPLICATION LAYOUT & LOGIC
 # ==============================================================================
 
-# Cache initial data fetching
-@st.cache_data(ttl=3600)
-def get_initial_data(ticker, force_refresh):
-    """Initial fetch for S, q, sigma (default), r, and default price."""
-    return get_current_data(ticker)
+# Custom function to handle initialization and fetching for the session
+def init_or_fetch_data(ticker_symbol, strike, expiration_date_str, option_type, refresh=False):
+    if 'data_state' not in st.session_state or refresh:
+        # Fetch data and store it directly in the session state
+        fetched_data = fetch_all_market_data(ticker_symbol, strike, expiration_date_str, option_type)
+        st.session_state.data_state = {
+            'S': round(fetched_data['S'], 2),
+            'r_percent': round(fetched_data['r_percent'], 2),
+            'q_percent': round(fetched_data['q_percent'], 2),
+            'sigma_percent': round(fetched_data['sigma_decimal'] * 100, 2),
+            'market_price': round(fetched_data['market_price'], 2),
+            'error': fetched_data['error']
+        }
+    return st.session_state.data_state
 
 def main():
     st.set_page_config(layout="wide", page_title="Advanced Options Calculator")
@@ -246,78 +222,61 @@ def main():
     st.title("💰 Advanced Option Calculator")
     st.markdown("---")
     
-    # Initialize Session State for dynamic updating (Market Price and IV defaults)
-    if 'current_market_price' not in st.session_state:
-        st.session_state.current_market_price = 0.50
-    if 'current_iv_decimal' not in st.session_state:
-        st.session_state.current_iv_decimal = 0.20
+    # Define Ticker and Expiry defaults before the sidebar block
+    default_ticker = "SPY"
+    _, default_date = find_next_3rd_friday(min_days=30)
+    default_strike = 450.0 # Set a neutral default to avoid errors on first run
 
     # --- Sidebar Inputs & Ticker Handling ---
     with st.sidebar:
-        st.header("1. Ticker & Refresh")
-        ticker_symbol = st.text_input("Stock Symbol:", "SPY").upper()
+        st.header("1. Core Inputs")
         
-        # 1A. Fetch Initial Data (S, RFR, Q, and initial defaults for IV/Price)
-        st.markdown("---")
-        if st.button("🔄 Refresh Core Data (S, RFR, Q, Default ATM IV/Price)"):
-            refresh_key = datetime.datetime.now()
-            current_price, current_yield_decimal, default_iv_decimal, current_rfr_percent, default_price = get_initial_data(ticker_symbol, refresh_key)
-            st.session_state.current_market_price = round(default_price, 2)
-            st.session_state.current_iv_decimal = default_iv_decimal
-        else:
-            # Load from cache on app startup or if no refresh is pressed
-            current_price, current_yield_decimal, default_iv_decimal, current_rfr_percent, default_price = get_initial_data(ticker_symbol, None)
-            
-            # Initialize session state if this is the very first run
-            if st.session_state.current_market_price == 0.50:
-                st.session_state.current_market_price = round(default_price, 2)
-            if st.session_state.current_iv_decimal == 0.20:
-                st.session_state.current_iv_decimal = default_iv_decimal
-
-        st.markdown("---")
-        st.header("2. Input Parameters")
+        # Ticker Symbol (Needs to be a standard variable for the update function)
+        ticker_symbol = st.text_input("Stock Symbol:", default_ticker).upper()
         
-        # Core BSM Inputs
-        S = st.number_input("Underlying Price (S):", value=round(current_price, 2), format="%.2f") # Made editable
-        
+        # Option Type and Expiry (Needs to be standard variables)
         option_type = st.radio("Option Type:", ['call', 'put'], horizontal=True)
-        K = st.number_input("Strike Price (K):", value=round(current_price, 0), format="%.2f") 
-        
-        _, default_date = find_next_3rd_friday(min_days=30)
-        expiration_date = st.date_input("Expiration Date:", value=default_date)
+        K = st.number_input("Strike Price (K):", value=default_strike, format="%.2f", key='k_input') 
+        expiration_date = st.date_input("Expiration Date:", value=default_date, key='exp_date_input')
         expiration_date_str = expiration_date.strftime('%Y-%m-%d')
         
-        r_percent = st.number_input("Risk-free Rate (%r):", value=round(current_rfr_percent, 2), format="%.2f")
-        
-        # Volatility is now a direct input, defaulting to the last fetched/solved IV
-        sigma_percent = st.number_input(
-            "Volatility (%Sigma):", 
-            value=round(st.session_state.current_iv_decimal * 100, 2), 
-            format="%.2f",
-            key='sigma_input_default'
-        )
-        
-        q_percent = st.number_input("Dividend Yield (%q):", value=round(current_yield_decimal * 100, 2), format="%.2f")
-        
         st.markdown("---")
-        st.header("3. Market Data Solver")
+        st.header("2. Input Parameters")
 
-        # 1B. Fetch Data for the SPECIFIC CONFIGURATION
-        if st.button("🔎 Get Market Price & IV for Configured Option"):
-            fetched_price, fetched_iv = get_specific_option_data(
-                ticker_symbol, K, expiration_date_str, option_type, S
-            )
-            st.session_state.current_market_price = round(fetched_price, 2)
-            st.session_state.current_iv_decimal = fetched_iv
-            st.rerun() # Rerun to update the inputs
+        # Get the current state (either default/cached or newly fetched)
+        current_data = init_or_fetch_data(ticker_symbol, K, expiration_date_str, option_type, refresh=False)
 
-        # Current Market Price Input (Uses Session State)
-        market_price = st.number_input(
-            "Current Market Price (C/P):", 
-            value=st.session_state.current_market_price, 
-            min_value=0.01, 
-            format="%.2f",
-            key='market_price_input'
+        # Core BSM Inputs (Pulling from session state)
+        S = st.number_input("Underlying Price (S):", value=current_data['S'], format="%.2f", key='s_input')
+        r_percent = st.number_input("Risk-free Rate (%r):", value=current_data['r_percent'], format="%.2f", key='r_input')
+        sigma_percent = st.number_input("Volatility (%Sigma):", value=current_data['sigma_percent'], format="%.2f", key='sigma_input')
+        q_percent = st.number_input("Dividend Yield (%q):", value=current_data['q_percent'], format="%.2f", key='q_input')
+        
+        # --- NEW UPDATE BUTTON ---
+        if st.button("🔄 Update Input Parameter Data"):
+            # Fetch new data for the currently configured option
+            new_data = fetch_all_market_data(ticker_symbol, K, expiration_date_str, option_type)
+            
+            # Update the session state with the new fetched data
+            st.session_state.data_state = {
+                'S': round(new_data['S'], 2),
+                'r_percent': round(new_data['r_percent'], 2),
+                'q_percent': round(new_data['q_percent'], 2),
+                'sigma_percent': round(new_data['sigma_decimal'] * 100, 2),
+                'market_price': round(new_data['market_price'], 2),
+                'error': new_data['error']
+            }
+            if st.session_state.data_state['error']:
+                 st.error(f"Error: {st.session_state.data_state['error']}")
+            st.rerun() 
+
+        st.markdown("---")
+        st.header("3. Current Market Price")
+        
+        # Display the fetched market price (Read-only)
+        st.metric(
+            label=f"Current Market Price ({option_type.upper()})",
+            value=f"${current_data['market_price']:.2f}"
         )
         
     # --- Calculations ---
@@ -327,12 +286,15 @@ def main():
     T_days = max(1, T_delta.days)
     r_decimal = r_percent / 100.0
     q_decimal = q_percent / 100.0
-    
-    # Use the sigma input directly from the sidebar
-    sigma_decimal_input = sigma_percent / 100.0
+    sigma_decimal_input = sigma_percent / 100.0 # Use user's input sigma
 
-    # Calculate the actual IV based on the Market Price input for the solver section metric
-    solved_iv_decimal = calculate_implied_volatility(S, K, T_days, r_decimal, market_price, q_decimal, option_type)
+    # Market price from session state for IV calculation and solver section
+    market_price_for_solve = current_data['market_price']
+
+    # Calculate the Implied Volatility based on the fetched Market Price
+    solved_iv_decimal = calculate_implied_volatility(
+        S, K, T_days, r_decimal, market_price_for_solve, q_decimal, option_type
+    )
     
     # Perform the main calculation using the user's input sigma
     price = black_scholes_price(S, K, T_days, r_decimal, sigma_decimal_input, q_decimal, option_type)
@@ -350,9 +312,12 @@ def main():
 
     with col1:
         st.subheader(f"Theoretical Price ({option_type.upper()})")
+        # Now explicitly stating that this price uses the user's input Volatility
         st.metric(label="Estimated Price (using Input Volatility)", value=f"${price:.2f}")
+        
+        # Display the IV solved from the actual market price
         st.metric(
-            label="Implied Volatility (Solved from Market Price)", 
+            label="Implied Volatility (Solved from Current Market Price)", 
             value=f"{solved_iv_decimal * 100.0:.2f}%"
         )
         st.info(f"Days to Expiration (DTE): **{T_days}**")
@@ -395,10 +360,11 @@ def main():
     # --- Tab 3: Implied DTE Solver (Price -> Days) ---
     with tab3:
         st.subheader("Solve Implied DTE")
-        # Note: We use the *Calculated* IV (solved_iv_decimal) for a more realistic DTE estimate
-        implied_dte_price = st.number_input("Price to Infer DTE:", min_value=0.01, value=market_price if market_price > 0.01 else 0.50, format="%.2f", key='dte_price')
+        # Default value for DTE solver is the fetched market price
+        implied_dte_price = st.number_input("Price to Infer DTE:", min_value=0.01, value=market_price_for_solve if market_price_for_solve > 0.01 else 0.50, format="%.2f", key='dte_price')
         if st.button("Solve Implied DTE"):
             if implied_dte_price > 0.01:
+                # Use the Solved IV for a realistic implied DTE
                 solved_T_days = int(round(calculate_implied_time(S, K, solved_iv_decimal, r_decimal, implied_dte_price, q_decimal, option_type)))
                 
                 solved_date = datetime.date.today() + datetime.timedelta(days=solved_T_days)
@@ -429,7 +395,7 @@ def main():
         ax.axvline(K, color='blue', linestyle='-.', alpha=0.6, label='Strike Price (K)')
         ax.axvline(S, color='red', linestyle='--', alpha=0.6, label='Current Stock Price')
         ax.plot(S, price, 'o', color='red', markersize=8, label=f'Price: ${price:.2f}')
-        ax.set_title(f'{option_type.upper()} Price vs. Underlying Price (IV: {sigma_percent:.2f}%)')
+        ax.set_title(f'{option_type.upper()} Price vs. Underlying Price (Input IV: {sigma_percent:.2f}%)')
         ax.set_xlabel('Underlying Price (S)')
         ax.set_ylabel('Option Theoretical Value ($)')
         ax.grid(True, linestyle=':', alpha=0.7)
