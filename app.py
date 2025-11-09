@@ -131,11 +131,9 @@ def find_next_3rd_friday(min_days=30):
         exp_date = (exp_date.replace(day=1) + relativedelta(months=1)).replace(day=1) + relativedelta(weekday=FR(3))
     return exp_date.strftime('%Y-%m-%d'), exp_date
 
-# --- CORE FETCHING FUNCTION (FIXED IV & DIV YIELD) ---
+# --- CORE FETCHING FUNCTION (Initial data fetch) ---
 def get_current_data(ticker_symbol):
-    """Fetches stock price, RFR, and calculates initial IV."""
-    # Set fallback defaults
-    default_iv_decimal = 0.20 
+    """Fetches stock price, RFR, and dividend yield."""
     rfr_percent = 4.0
     price = 100.0
     div_yield_decimal = 0.015
@@ -152,21 +150,27 @@ def get_current_data(ticker_symbol):
         price_info = ticker.info
         price = price_info.get('regularMarketPrice', 100.0)
         
-        # FIX: Robust Dividend Yield Fetching
+        # Robust Dividend Yield Fetching
         fetched_div_yield = price_info.get('dividendYield')
         if fetched_div_yield is not None:
             if fetched_div_yield > 0.001 and fetched_div_yield < 1.0: 
                 div_yield_decimal = fetched_div_yield
             elif fetched_div_yield >= 1.0 and fetched_div_yield <= 100.0:
-                # If it's reported as a percentage (e.g., 2.5), convert it
                 div_yield_decimal = fetched_div_yield / 100.0
-        
-        
-        # 3. Fetch Option IV directly from the chain (FIXED FOR ROBUSTNESS)
-        _, default_exp_date_obj = find_next_3rd_friday(min_days=30)
-        default_exp_date_str = default_exp_date_obj.strftime('%Y-%m-%d')
-        
-        options_data = ticker.option_chain(default_exp_date_str)
+            
+    except Exception:
+        # If any fetching fails, the defaults are used
+        pass 
+
+    # We do NOT fetch IV here anymore. IV is fetched separately by get_iv_for_expiry.
+    return float(price), div_yield_decimal, rfr_percent
+
+# --- NEW: Function to fetch ATM IV for a specific expiration date ---
+def get_iv_for_expiry(ticker_symbol, price, expiration_date_str):
+    default_iv_decimal = 0.20
+    try:
+        ticker = yf.Ticker(ticker_symbol)
+        options_data = ticker.option_chain(expiration_date_str)
         calls = options_data.calls
         
         if not calls.empty:
@@ -184,24 +188,26 @@ def get_current_data(ticker_symbol):
                     break # Exit loop once a valid IV is found
             
     except Exception:
-        # If any fetching fails, the defaults are used
         pass 
-
-    # Return 4 values: Price, Dividend Yield (decimal), Calculated IV (decimal), RFR (percentage)
-    return float(price), div_yield_decimal, default_iv_decimal, rfr_percent
+        
+    return default_iv_decimal
 
 # ==============================================================================
 # 3. STREAMLIT APPLICATION LAYOUT & LOGIC
 # ==============================================================================
 
-# FIX 1: Add TTL and argument for cache busting
+# FIX 1: Initial Data cache setup (only for S, r, q)
 @st.cache_data(ttl=3600)
 def get_initial_data(ticker, force_refresh):
-    """Initial fetch for S, q, sigma, and r."""
+    """Initial fetch for S, q, and r (IV is not fetched here)."""
     return get_current_data(ticker)
 
 def main():
     st.set_page_config(layout="wide", page_title="Advanced Options Calculator")
+
+    # Initialize Session State for Volatility (to be updated by button)
+    if 'sigma_decimal' not in st.session_state:
+        st.session_state.sigma_decimal = 0.20 # Initial default
 
     st.title("💰 Advanced Option Calculator")
     st.markdown("---")
@@ -212,13 +218,8 @@ def main():
         
         ticker_symbol = st.text_input("Stock Symbol:", "SPY").upper()
         
-        # FIX 2: Add refresh button logic
-        st.markdown("---")
-        refresh_button = st.button("🔄 Refresh Market Data")
-        refresh_key = datetime.datetime.now() if refresh_button else None
-        
-        # Fetch data (cached) - PASS THE REFRESH KEY
-        current_price, current_yield_decimal, default_iv_decimal, current_rfr_percent = get_initial_data(ticker_symbol, refresh_key)
+        # Fetch data (cached) - NOTE: IV is NOT in this result
+        current_price, current_yield_decimal, current_rfr_percent = get_initial_data(ticker_symbol, None)
         
         # Display/Input Parameters
         S = st.number_input("Underlying Price (S):", value=round(current_price, 2), format="%.2f", disabled=True)
@@ -228,16 +229,32 @@ def main():
         _, default_date = find_next_3rd_friday(min_days=30)
         expiration_date = st.date_input("Expiration Date:", value=default_date)
         
-        # Other inputs
+        # Convert date object to string for fetching
+        expiration_date_str = expiration_date.strftime('%Y-%m-%d')
+        
         # RFR NOW USES THE FETCHED VALUE:
         r_percent = st.number_input("Risk-Free Rate (%r):", value=round(current_rfr_percent, 2), format="%.2f")
-        
-        # IV NOW USES THE CALCULATED IV (or the 20% fallback)
-        sigma_percent = st.number_input("Volatility (%Sigma):", value=round(default_iv_decimal * 100, 2), format="%.2f")
         
         # DIV YIELD NOW USES THE FETCHED VALUE:
         q_percent = st.number_input("Dividend Yield (%q):", value=round(current_yield_decimal * 100, 2), format="%.2f")
         option_type = st.radio("Option Type:", ['call', 'put'], horizontal=True)
+
+        st.markdown("---")
+        
+        # --- NEW IV RECALCULATION LOGIC ---
+        if st.button("📈 Get IV for Current Expiry"):
+            # When the user clicks, fetch the ATM IV for the selected expiry
+            new_iv_decimal = get_iv_for_expiry(ticker_symbol, S, expiration_date_str)
+            st.session_state.sigma_decimal = new_iv_decimal
+            st.rerun()
+
+        # IV input now reads from session state
+        sigma_percent = st.number_input(
+            "Volatility (%Sigma):", 
+            value=round(st.session_state.sigma_decimal * 100, 2), 
+            format="%.2f", 
+            key='sigma_input'
+        )
 
     # --- Calculations ---
     
@@ -251,14 +268,14 @@ def main():
     # Perform the main calculation based on sidebar inputs
     price = black_scholes_price(S, K, T_days, r_decimal, sigma_decimal, q_decimal, option_type)
 
-    # --- NEW: Estimated Price Display in Sidebar ---
+    # --- Estimated Price Display in Sidebar (Updated) ---
     with st.sidebar:
         st.markdown("---")
         st.subheader("Current Option Value")
         st.markdown(f"**Theor. Price:** `${price:.2f}`")
-        st.markdown("Use this value in the IV Solver below to get the contract's IV.")
+        st.markdown("Use this price in the IV Solver to back-calculate the *contract's actual IV*.")
         st.markdown("---")
-
+        
     # ---------------------------------------------
     # Main Calculation Section
     # ---------------------------------------------
@@ -312,7 +329,7 @@ def main():
         )
         
         # Button to transfer the estimated price
-        if st.button(f"Inject Est. Price (${price:.2f})", key='inject_price'):
+        if st.button(f"Inject Theor. Price (${price:.2f})", key='inject_price'):
             st.session_state.iv_price_input = price
             # Force a rerun to update the number_input field with the new value
             st.rerun()
@@ -321,8 +338,13 @@ def main():
         if st.button("Solve IV", key='solve_iv_button'):
             if market_price > 0.01:
                 solved_iv_decimal = calculate_implied_volatility(S, K, T_days, r_decimal, market_price, q_decimal, option_type)
+                
+                # Update the main sidebar sigma with the solved value
+                st.session_state.sigma_decimal = solved_iv_decimal
+                
                 st.success(f"✅ Solved IV: **{solved_iv_decimal * 100.0:.2f}%**")
-                st.write(f"*(Enter this value into the Volatility input in the sidebar to update Greeks/Plot)*")
+                st.write(f"*(The Volatility in the sidebar has been updated.)*")
+                st.rerun() # Rerun to update the sidebar input field and main chart
             else:
                  st.warning("Please enter a Market Price > $0.01.")
         
@@ -345,7 +367,6 @@ def main():
     # --- Tab 3: Implied DTE Solver (Price -> Days) ---
     with tab3:
         st.subheader("Solve Implied DTE")
-        # Note: We still need the original key for the solver, but we ensure it defaults to the calculated price
         implied_dte_price = st.number_input("Price to Infer DTE:", min_value=0.01, value=price if price > 0.01 else 0.50, format="%.2f", key='dte_price')
         if st.button("Solve Implied DTE"):
             if implied_dte_price > 0.01:
