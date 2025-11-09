@@ -8,7 +8,7 @@ from scipy.optimize import brentq
 import matplotlib.pyplot as plt
 
 # ==============================================================================
-# 1. CORE BLACK-SCHOLES-MERTON (BSM) FUNCTIONS (Unchanged)
+# 1. CORE BLACK-SCHOLES-MERTON (BSM) FUNCTIONS
 # ==============================================================================
 
 # --- BSM Price Function ---
@@ -239,7 +239,7 @@ def main():
         q_percent = st.number_input("Dividend Yield (%q):", value=round(current_yield_decimal * 100, 2), format="%.2f")
         option_type = st.radio("Option Type:", ['call', 'put'], horizontal=True)
 
-    # --- Calculations (Unchanged) ---
+    # --- Calculations ---
     
     # Convert inputs to decimals and days-to-expiration
     T_delta = expiration_date - datetime.date.today()
@@ -248,6 +248,17 @@ def main():
     sigma_decimal = sigma_percent / 100.0
     q_decimal = q_percent / 100.0
 
+    # Perform the main calculation based on sidebar inputs
+    price = black_scholes_price(S, K, T_days, r_decimal, sigma_decimal, q_decimal, option_type)
+
+    # --- NEW: Estimated Price Display in Sidebar ---
+    with st.sidebar:
+        st.markdown("---")
+        st.subheader("Current Option Value")
+        st.markdown(f"**Theor. Price:** `${price:.2f}`")
+        st.markdown("Use this value in the IV Solver below to get the contract's IV.")
+        st.markdown("---")
+
     # ---------------------------------------------
     # Main Calculation Section
     # ---------------------------------------------
@@ -255,8 +266,7 @@ def main():
     
     col1, col2 = st.columns(2)
     
-    # Perform main calculation
-    price = black_scholes_price(S, K, T_days, r_decimal, sigma_decimal, q_decimal, option_type)
+    # Perform main calculation (price is already calculated)
     greeks = black_scholes_greeks(S, K, T_days, r_decimal, sigma_decimal, q_decimal, option_type)
     pot = calculate_probability_of_touch(S, K, T_days, r_decimal, sigma_decimal, q_decimal)
 
@@ -287,12 +297,32 @@ def main():
     # --- Tab 1: IV Solver (Price -> IV) ---
     with tab1:
         st.subheader("Solve Implied Volatility (IV)")
-        market_price = st.number_input("Market Price (C/P):", min_value=0.01, value=price if price > 0.01 else 0.50, format="%.2f", key='iv_price')
-        if st.button("Solve IV"):
+        
+        # New: Use a session state to hold the price input value
+        if 'iv_price_input' not in st.session_state:
+            st.session_state.iv_price_input = price if price > 0.01 else 0.50
+
+        # Input field for market price
+        market_price = st.number_input(
+            "Market Price (C/P):", 
+            min_value=0.01, 
+            value=st.session_state.iv_price_input, 
+            format="%.2f", 
+            key='iv_price'
+        )
+        
+        # Button to transfer the estimated price
+        if st.button(f"Inject Est. Price (${price:.2f})", key='inject_price'):
+            st.session_state.iv_price_input = price
+            # Force a rerun to update the number_input field with the new value
+            st.rerun()
+
+        # Solve button and logic
+        if st.button("Solve IV", key='solve_iv_button'):
             if market_price > 0.01:
                 solved_iv_decimal = calculate_implied_volatility(S, K, T_days, r_decimal, market_price, q_decimal, option_type)
                 st.success(f"✅ Solved IV: **{solved_iv_decimal * 100.0:.2f}%**")
-                st.write(f"*(Enter this value into the Volatility input to see new Greeks)*")
+                st.write(f"*(Enter this value into the Volatility input in the sidebar to update Greeks/Plot)*")
             else:
                  st.warning("Please enter a Market Price > $0.01.")
         
@@ -315,6 +345,7 @@ def main():
     # --- Tab 3: Implied DTE Solver (Price -> Days) ---
     with tab3:
         st.subheader("Solve Implied DTE")
+        # Note: We still need the original key for the solver, but we ensure it defaults to the calculated price
         implied_dte_price = st.number_input("Price to Infer DTE:", min_value=0.01, value=price if price > 0.01 else 0.50, format="%.2f", key='dte_price')
         if st.button("Solve Implied DTE"):
             if implied_dte_price > 0.01:
