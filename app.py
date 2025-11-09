@@ -132,6 +132,7 @@ def find_next_3rd_friday(min_days=30):
     return exp_date.strftime('%Y-%m-%d'), exp_date
 
 # --- Fetch ALL Market Data for the specified Ticker, Strike, Expiry, and Type ---
+# @st.cache_data(ttl=3600) # Removed cache since we now use session state logic for dynamic updates
 def fetch_all_market_data(ticker_symbol, strike, expiration_date_str, option_type):
     """Fetches S, RFR, Q, and the specific option's IV and Price."""
     
@@ -202,11 +203,13 @@ def fetch_all_market_data(ticker_symbol, strike, expiration_date_str, option_typ
 # ==============================================================================
 
 # Custom function to handle initialization and fetching for the session
+# This function is run ONLY on app startup or if the main refresh button is pressed
 def init_or_fetch_data(ticker_symbol, strike, expiration_date_str, option_type, refresh=False):
     if 'data_state' not in st.session_state or refresh:
         # Fetch data and store it directly in the session state
         fetched_data = fetch_all_market_data(ticker_symbol, strike, expiration_date_str, option_type)
         st.session_state.data_state = {
+            # Ensure the values are always rounded when stored in state for display consistency
             'S': round(fetched_data['S'], 2),
             'r_percent': round(fetched_data['r_percent'], 2),
             'q_percent': round(fetched_data['q_percent'], 2),
@@ -225,39 +228,46 @@ def main():
     # Define Ticker and Expiry defaults before the sidebar block
     default_ticker = "SPY"
     _, default_date = find_next_3rd_friday(min_days=30)
-    default_strike = 450.0 # Set a neutral default to avoid errors on first run
+    # Using a known strike to ensure initial fetch works (e.g., SPY 450)
+    default_strike = 450.0 
 
     # --- Sidebar Inputs & Ticker Handling ---
     with st.sidebar:
         st.header("1. Core Inputs")
         
-        # Ticker Symbol (Needs to be a standard variable for the update function)
+        # Ticker Symbol
         ticker_symbol = st.text_input("Stock Symbol:", default_ticker).upper()
         
-        # Option Type and Expiry (Needs to be standard variables)
+        # Option Type and Expiry 
         option_type = st.radio("Option Type:", ['call', 'put'], horizontal=True)
+        # Use st.session_state to hold the strike/date inputs to maintain their value
         K = st.number_input("Strike Price (K):", value=default_strike, format="%.2f", key='k_input') 
         expiration_date = st.date_input("Expiration Date:", value=default_date, key='exp_date_input')
         expiration_date_str = expiration_date.strftime('%Y-%m-%d')
+
+        # 1A. Initial Fetch (only runs once, or if parameters change and the button is pressed)
+        # The first call fetches data and populates session_state
+        current_data = init_or_fetch_data(ticker_symbol, K, expiration_date_str, option_type, refresh=False)
         
         st.markdown("---")
         st.header("2. Input Parameters")
 
-        # Get the current state (either default/cached or newly fetched)
-        current_data = init_or_fetch_data(ticker_symbol, K, expiration_date_str, option_type, refresh=False)
-
-        # Core BSM Inputs (Pulling from session state)
+        # Core BSM Inputs. KEY FIX: The value parameter now MUST pull directly from 
+        # the session state to update when rerun() is called.
         S = st.number_input("Underlying Price (S):", value=current_data['S'], format="%.2f", key='s_input')
         r_percent = st.number_input("Risk-free Rate (%r):", value=current_data['r_percent'], format="%.2f", key='r_input')
+        
+        # FIX: The sigma input now pulls its value from the session state
         sigma_percent = st.number_input("Volatility (%Sigma):", value=current_data['sigma_percent'], format="%.2f", key='sigma_input')
+        
         q_percent = st.number_input("Dividend Yield (%q):", value=current_data['q_percent'], format="%.2f", key='q_input')
         
-        # --- NEW UPDATE BUTTON ---
+        # --- UPDATE BUTTON ---
         if st.button("🔄 Update Input Parameter Data"):
-            # Fetch new data for the currently configured option
+            # Fetch new data for the currently configured option and set refresh=True
             new_data = fetch_all_market_data(ticker_symbol, K, expiration_date_str, option_type)
             
-            # Update the session state with the new fetched data
+            # Update the session state with the new fetched data (This triggers the update of the inputs)
             st.session_state.data_state = {
                 'S': round(new_data['S'], 2),
                 'r_percent': round(new_data['r_percent'], 2),
@@ -266,9 +276,10 @@ def main():
                 'market_price': round(new_data['market_price'], 2),
                 'error': new_data['error']
             }
+
             if st.session_state.data_state['error']:
                  st.error(f"Error: {st.session_state.data_state['error']}")
-            st.rerun() 
+            st.rerun() # Rerunning will force the inputs to use the new session state values
 
         st.markdown("---")
         st.header("3. Current Market Price")
@@ -281,7 +292,7 @@ def main():
         
     # --- Calculations ---
     
-    # Convert inputs to decimals and days-to-expiration
+    # Convert inputs to decimals and days-to-expiration (always use the values from the input fields)
     T_delta = expiration_date - datetime.date.today()
     T_days = max(1, T_delta.days)
     r_decimal = r_percent / 100.0
