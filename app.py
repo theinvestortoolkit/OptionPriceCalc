@@ -92,7 +92,7 @@ def calculate_probability_of_touch(S, K, T, r, sigma, q=0.0):
     except Exception:
         return 1.0 
 
-# --- Implied Volatility Solver (Unchanged, but now used directly in sidebar) ---
+# --- Implied Volatility Solver ---
 def calculate_implied_volatility(S, K, T, r, market_price, q=0.0, option_type='call'):
     """Calculates the Implied Volatility (IV)."""
     def price_difference(sigma):
@@ -279,15 +279,6 @@ def main():
             if st.session_state.data_state['error']:
                  st.error(f"Error: {st.session_state.data_state['error']}")
             st.rerun() 
-
-        st.markdown("---")
-        st.header("3. Current Market Price")
-        
-        # Display the fetched market price (Read-only)
-        st.metric(
-            label=f"Current Market Price ({option_type.upper()})",
-            value=f"${current_data['market_price']:.2f}"
-        )
         
     # --- Calculations ---
     
@@ -298,19 +289,19 @@ def main():
     q_decimal = q_percent / 100.0
     sigma_decimal_input = sigma_percent / 100.0 # Use user's input sigma
 
-    # Market price from session state for IV calculation and solver section
-    market_price_for_solve = current_data['market_price']
+    # Market price from session state for comparison
+    market_price_current = current_data['market_price']
 
-    # Calculate the Implied Volatility based on the fetched Market Price
+    # Calculate the Implied Volatility (still needed for the Implied DTE Solver)
     solved_iv_decimal = calculate_implied_volatility(
-        S, K, T_days, r_decimal, market_price_for_solve, q_decimal, option_type
+        S, K, T_days, r_decimal, market_price_current, q_decimal, option_type
     )
     
     # Perform the main calculation using the user's input sigma
     price = black_scholes_price(S, K, T_days, r_decimal, sigma_decimal_input, q_decimal, option_type)
 
     # ---------------------------------------------
-    # Main Calculation Section
+    # Main Calculation Section (Updated Display)
     # ---------------------------------------------
     st.header("2. Main Calculation")
     
@@ -321,15 +312,23 @@ def main():
     pot = calculate_probability_of_touch(S, K, T_days, r_decimal, sigma_decimal_input, q_decimal)
 
     with col1:
-        st.subheader(f"Theoretical Price ({option_type.upper()})")
-        # Now explicitly stating that this price uses the user's input Volatility
-        st.metric(label="Estimated Price (using Input Volatility)", value=f"${price:.2f}")
+        st.subheader(f"Price Comparison ({option_type.upper()})")
         
-        # Display the IV solved from the actual market price
+        # NEW: Current Market Price (Moved from Sidebar)
         st.metric(
-            label="Implied Volatility (Solved from Current Market Price)", 
-            value=f"{solved_iv_decimal * 100.0:.2f}%"
+            label=f"Current Market Price ({option_type.upper()})",
+            value=f"${market_price_current:.2f}",
+            delta_color="off"
         )
+        
+        # Estimated Theoretical Price (Your Theo Price)
+        st.metric(
+            label="Theoretical Price (using Input Volatility)", 
+            value=f"${price:.2f}",
+            delta=f"Diff: ${price - market_price_current:.2f}",
+            delta_color="inverse"
+        )
+        
         st.info(f"Days to Expiration (DTE): **{T_days}**")
 
     with col2:
@@ -370,8 +369,12 @@ def main():
     # --- Tab 3: Implied DTE Solver (Price -> Days) ---
     with tab3:
         st.subheader("Solve Implied DTE")
+        
+        # Display the IV used for solving DTE
+        st.info(f"Using **Implied Volatility (IV): {solved_iv_decimal * 100.0:.2f}%** for this calculation.")
+        
         # Default value for DTE solver is the fetched market price
-        implied_dte_price = st.number_input("Price to Infer DTE:", min_value=0.01, value=market_price_for_solve if market_price_for_solve > 0.01 else 0.50, format="%.2f", key='dte_price')
+        implied_dte_price = st.number_input("Price to Infer DTE:", min_value=0.01, value=market_price_current if market_price_current > 0.01 else 0.50, format="%.2f", key='dte_price')
         if st.button("Solve Implied DTE"):
             if implied_dte_price > 0.01:
                 # Use the Solved IV for a realistic implied DTE
