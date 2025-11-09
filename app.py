@@ -8,7 +8,7 @@ from scipy.optimize import brentq
 import matplotlib.pyplot as plt
 
 # ==============================================================================
-# 1. CORE BLACK-SCHOLES-MERTON (BSM) FUNCTIONS
+# 1. CORE BLACK-SCHOLES-MERTON (BSM) FUNCTIONS (Unchanged)
 # ==============================================================================
 
 # --- BSM Price Function ---
@@ -131,10 +131,11 @@ def find_next_3rd_friday(min_days=30):
         exp_date = (exp_date.replace(day=1) + relativedelta(months=1)).replace(day=1) + relativedelta(weekday=FR(3))
     return exp_date.strftime('%Y-%m-%d'), exp_date
 
-# --- CORE FETCHING FUNCTION (FIXED IV) ---
+# --- CORE FETCHING FUNCTION (FIXED IV & DIV YIELD) ---
 def get_current_data(ticker_symbol):
     """Fetches stock price, RFR, and calculates initial IV."""
-    default_iv_decimal = 0.20 # Fallback default
+    # Set fallback defaults
+    default_iv_decimal = 0.20 
     rfr_percent = 4.0
     price = 100.0
     div_yield_decimal = 0.015
@@ -148,13 +149,22 @@ def get_current_data(ticker_symbol):
         
         # 2. Fetch Stock Data
         ticker = yf.Ticker(ticker_symbol)
-        price = ticker.info.get('regularMarketPrice')
+        price_info = ticker.info
+        price = price_info.get('regularMarketPrice', 100.0)
         
-        div_yield_decimal = ticker.info.get('dividendYield', 0.015)
-        if div_yield_decimal is None or div_yield_decimal > 1.0: 
-            div_yield_decimal = 0.015 
-            
-        # 3. Fetch Option IV directly from the chain (CORRECTED BLOCK)
+        # FIX: Robust Dividend Yield Fetching
+        fetched_div_yield = price_info.get('dividendYield')
+        if fetched_div_yield is not None:
+            # Ensure it's not a tiny number or a huge percent > 100%
+            if fetched_div_yield > 0.001 and fetched_div_yield < 1.0: 
+                div_yield_decimal = fetched_div_yield
+            elif fetched_div_yield >= 1.0 and fetched_div_yield <= 100.0:
+                # If it's reported as a percentage (e.g., 2.5), convert it
+                div_yield_decimal = fetched_div_yield / 100.0
+        # If fetching fails or is 0, we keep the default of 0.015 (1.5%)
+        
+        
+        # 3. Fetch Option IV directly from the chain (FIXED FOR ROBUSTNESS)
         _, default_exp_date_obj = find_next_3rd_friday(min_days=30)
         default_exp_date_str = default_exp_date_obj.strftime('%Y-%m-%d')
         
@@ -162,19 +172,21 @@ def get_current_data(ticker_symbol):
         calls = options_data.calls
         
         if not calls.empty:
-            # Find the option closest to At-The-Money (ATM)
+            # Sort by absolute distance from current price (ATM)
             calls['Strike_Diff'] = np.abs(calls['strike'] - price)
-            atm_call = calls.loc[calls['Strike_Diff'].idxmin()]
+            calls = calls.sort_values(by='Strike_Diff')
             
-            # CRITICAL FIX: Use the impliedVolatility column directly
-            implied_vol = atm_call.get('impliedVolatility')
-            
-            # Ensure the value is valid and use it
-            if implied_vol is not None and implied_vol > 0.01:
-                default_iv_decimal = implied_vol
+            # Iterate through the options closest to ATM until we find valid IV data
+            for index, option in calls.iterrows():
+                implied_vol = option.get('impliedVolatility')
+                
+                # Use IV if it's available and realistic (e.g., above 1%)
+                if implied_vol is not None and implied_vol > 0.01 and implied_vol < 5.0:
+                    default_iv_decimal = implied_vol
+                    break # Exit loop once a valid IV is found
             
     except Exception:
-        # If any fetching fails, the defaults (20% IV, 4.0% RFR) are used
+        # If any fetching fails, the defaults are used
         pass 
 
     # Return 4 values: Price, Dividend Yield (decimal), Calculated IV (decimal), RFR (percentage)
@@ -220,6 +232,7 @@ def main():
         # IV NOW USES THE CALCULATED IV (or the 20% fallback)
         sigma_percent = st.number_input("Volatility (%Sigma):", value=round(default_iv_decimal * 100, 2), format="%.2f")
         
+        # DIV YIELD NOW USES THE FETCHED VALUE:
         q_percent = st.number_input("Dividend Yield (%q):", value=round(current_yield_decimal * 100, 2), format="%.2f")
         option_type = st.radio("Option Type:", ['call', 'put'], horizontal=True)
 
