@@ -225,7 +225,7 @@ def main():
 
         st.markdown("---")
 
-        # NEW: Market Price Input
+        # NEW: Market Price Input (Crucial for solving the option's true IV)
         market_price = st.number_input("Current Market Price (C/P):", value=0.50, min_value=0.01, format="%.2f")
 
         # RFR NOW USES THE FETCHED VALUE:
@@ -333,6 +333,9 @@ def main():
     st.header("4. Theoretical Price vs. Underlying")
     
     try:
+        # CORRECTED LINE: Ensure plt.subplots has closed parenthesis
+        fig, ax = plt.subplots(figsize=(10, 6)) 
+        
         S_min = max(0, S * 0.8)
         S_max = S * 1.2
         S_range = np.linspace(S_min, S_max, 100)
@@ -342,4 +345,22 @@ def main():
             for s in S_range
         ]
         
-        fig, ax = plt.subplots(figsize=(1
+        ax.plot(S_range, prices_over_range, label=f'Theoretical Price ({option_type.upper()})', color='darkgreen', linewidth=3)
+        ax.axvline(K, color='blue', linestyle='-.', alpha=0.6, label='Strike Price (K)')
+        ax.axvline(S, color='red', linestyle='--', alpha=0.6, label='Current Stock Price')
+        ax.plot(S, price, 'o', color='red', markersize=8, label=f'Price: ${price:.2f}')
+        ax.set_title(f'{option_type.upper()} Price vs. Underlying Price (IV: {sigma_decimal * 100.0:.2f}%)')
+        ax.set_xlabel('Underlying Price (S)')
+        ax.set_ylabel('Option Theoretical Value ($)')
+        ax.grid(True, linestyle=':', alpha=0.7)
+        ax.legend()
+        
+        st.pyplot(fig)
+        
+    except Exception as e:
+        st.error(f"An error occurred during plotting: {e}")
+    
+    st.markdown("---") 
+
+if __name__ == "__main__":
+    main()
