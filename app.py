@@ -249,7 +249,7 @@ def main():
         S = st.number_input("Underlying Price (S):", value=current_data['S'], format="%.2f", key='s_input')
         r_percent = st.number_input("Risk-free Rate (%r):", value=current_data['r_percent'], format="%.2f", key='r_input')
         
-        # FIX: Dynamic key for the Volatility input
+        # Dynamic key for the Volatility input to force update
         sigma_percent = st.number_input(
             "Volatility (%Sigma):", 
             value=current_data['sigma_percent'], 
@@ -311,7 +311,7 @@ def main():
 
     # ---------------------------------------------
     # Main Calculation Section
-    ---------------------------------------------
+    # ---------------------------------------------
     st.header("2. Main Calculation")
     
     col1, col2 = st.columns(2)
@@ -346,7 +346,7 @@ def main():
     
     # ---------------------------------------------
     # Solver/Simulator Section (Tabs for clean UI)
-    ---------------------------------------------
+    # ---------------------------------------------
     
     st.header("3. Option Solvers & Simulators")
     tab2, tab3 = st.tabs(["DTE Simulator", "Implied DTE Solver"])
@@ -385,7 +385,7 @@ def main():
 
     # ---------------------------------------------
     # 4. Plotting Section
-    ---------------------------------------------
+    # ---------------------------------------------
     st.markdown("---")
     st.header("4. Theoretical Price vs. Underlying")
     
