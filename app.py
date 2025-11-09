@@ -92,7 +92,7 @@ def calculate_probability_of_touch(S, K, T, r, sigma, q=0.0):
     except Exception:
         return 1.0 
 
-# --- Implied Volatility Solver ---
+# --- Implied Volatility Solver (Unchanged, but now used directly in sidebar) ---
 def calculate_implied_volatility(S, K, T, r, market_price, q=0.0, option_type='call'):
     """Calculates the Implied Volatility (IV)."""
     def price_difference(sigma):
@@ -103,8 +103,8 @@ def calculate_implied_volatility(S, K, T, r, market_price, q=0.0, option_type='c
         implied_volatility = brentq(price_difference, 0.001, 5.0)
         return implied_volatility
     except Exception:
-        return 0.20
-
+        return 0.20 # Fallback
+    
 # --- Implied Time Solver ---
 def calculate_implied_time(S, K, sigma, r, market_price, q=0.0, option_type='call'):
     """Calculates the Implied Days to Expiration (T in days)."""
@@ -131,9 +131,11 @@ def find_next_3rd_friday(min_days=30):
         exp_date = (exp_date.replace(day=1) + relativedelta(months=1)).replace(day=1) + relativedelta(weekday=FR(3))
     return exp_date.strftime('%Y-%m-%d'), exp_date
 
-# --- CORE FETCHING FUNCTION (Initial data fetch) ---
+# --- CORE FETCHING FUNCTION (Reverts to fetching IV once for default) ---
 def get_current_data(ticker_symbol):
-    """Fetches stock price, RFR, and dividend yield."""
+    """Fetches stock price, RFR, dividend yield, and default IV."""
+    # Set fallback defaults
+    default_iv_decimal = 0.20 
     rfr_percent = 4.0
     price = 100.0
     div_yield_decimal = 0.015
@@ -157,57 +159,43 @@ def get_current_data(ticker_symbol):
                 div_yield_decimal = fetched_div_yield
             elif fetched_div_yield >= 1.0 and fetched_div_yield <= 100.0:
                 div_yield_decimal = fetched_div_yield / 100.0
-            
-    except Exception:
-        # If any fetching fails, the defaults are used
-        pass 
-
-    # We do NOT fetch IV here anymore. IV is fetched separately by get_iv_for_expiry.
-    return float(price), div_yield_decimal, rfr_percent
-
-# --- NEW: Function to fetch ATM IV for a specific expiration date ---
-def get_iv_for_expiry(ticker_symbol, price, expiration_date_str):
-    default_iv_decimal = 0.20
-    try:
-        ticker = yf.Ticker(ticker_symbol)
-        options_data = ticker.option_chain(expiration_date_str)
+        
+        
+        # 3. Fetch Option IV directly from the chain for the next 3rd Friday
+        _, default_exp_date_obj = find_next_3rd_friday(min_days=30)
+        default_exp_date_str = default_exp_date_obj.strftime('%Y-%m-%d')
+        
+        options_data = ticker.option_chain(default_exp_date_str)
         calls = options_data.calls
         
         if not calls.empty:
-            # Sort by absolute distance from current price (ATM)
             calls['Strike_Diff'] = np.abs(calls['strike'] - price)
             calls = calls.sort_values(by='Strike_Diff')
             
-            # Iterate through the options closest to ATM until we find valid IV data
             for index, option in calls.iterrows():
                 implied_vol = option.get('impliedVolatility')
-                
-                # Use IV if it's available and realistic (e.g., above 1%)
                 if implied_vol is not None and implied_vol > 0.01 and implied_vol < 5.0:
                     default_iv_decimal = implied_vol
-                    break # Exit loop once a valid IV is found
+                    break 
             
     except Exception:
         pass 
-        
-    return default_iv_decimal
+
+    # Return 4 values: Price, Dividend Yield (decimal), Calculated IV (decimal), RFR (percentage)
+    return float(price), div_yield_decimal, default_iv_decimal, rfr_percent
 
 # ==============================================================================
 # 3. STREAMLIT APPLICATION LAYOUT & LOGIC
 # ==============================================================================
 
-# FIX 1: Initial Data cache setup (only for S, r, q)
+# Cache initial data fetching
 @st.cache_data(ttl=3600)
 def get_initial_data(ticker, force_refresh):
-    """Initial fetch for S, q, and r (IV is not fetched here)."""
+    """Initial fetch for S, q, sigma (default), and r."""
     return get_current_data(ticker)
 
 def main():
     st.set_page_config(layout="wide", page_title="Advanced Options Calculator")
-
-    # Initialize Session State for Volatility (to be updated by button)
-    if 'sigma_decimal' not in st.session_state:
-        st.session_state.sigma_decimal = 0.20 # Initial default
 
     st.title("💰 Advanced Option Calculator")
     st.markdown("---")
@@ -218,64 +206,57 @@ def main():
         
         ticker_symbol = st.text_input("Stock Symbol:", "SPY").upper()
         
-        # Fetch data (cached) - NOTE: IV is NOT in this result
-        current_price, current_yield_decimal, current_rfr_percent = get_initial_data(ticker_symbol, None)
+        # Cache management button
+        st.markdown("---")
+        refresh_button = st.button("🔄 Refresh Market Data (S, RFR, Default IV)")
+        refresh_key = datetime.datetime.now() if refresh_button else None
+        
+        # Fetch data (cached)
+        current_price, current_yield_decimal, default_iv_decimal, current_rfr_percent = get_initial_data(ticker_symbol, refresh_key)
         
         # Display/Input Parameters
         S = st.number_input("Underlying Price (S):", value=round(current_price, 2), format="%.2f", disabled=True)
-        K = st.number_input("Strike Price (K):", value=round(current_price, 0), format="%.2f") # Default strike is ATM
+        K = st.number_input("Strike Price (K):", value=round(current_price, 0), format="%.2f") 
         
-        # Default date calculation
         _, default_date = find_next_3rd_friday(min_days=30)
         expiration_date = st.date_input("Expiration Date:", value=default_date)
         
-        # Convert date object to string for fetching
-        expiration_date_str = expiration_date.strftime('%Y-%m-%d')
-        
+        option_type = st.radio("Option Type:", ['call', 'put'], horizontal=True)
+
+        st.markdown("---")
+
+        # NEW: Market Price Input
+        market_price = st.number_input("Current Market Price (C/P):", value=0.50, min_value=0.01, format="%.2f")
+
         # RFR NOW USES THE FETCHED VALUE:
         r_percent = st.number_input("Risk-Free Rate (%r):", value=round(current_rfr_percent, 2), format="%.2f")
         
         # DIV YIELD NOW USES THE FETCHED VALUE:
         q_percent = st.number_input("Dividend Yield (%q):", value=round(current_yield_decimal * 100, 2), format="%.2f")
-        option_type = st.radio("Option Type:", ['call', 'put'], horizontal=True)
-
-        st.markdown("---")
         
-        # --- NEW IV RECALCULATION LOGIC ---
-        if st.button("📈 Get IV for Current Expiry"):
-            # When the user clicks, fetch the ATM IV for the selected expiry
-            new_iv_decimal = get_iv_for_expiry(ticker_symbol, S, expiration_date_str)
-            st.session_state.sigma_decimal = new_iv_decimal
-            st.rerun()
-
-        # IV input now reads from session state
-        sigma_percent = st.number_input(
-            "Volatility (%Sigma):", 
-            value=round(st.session_state.sigma_decimal * 100, 2), 
-            format="%.2f", 
-            key='sigma_input'
-        )
-
+        # Default Volatility (Used for calculating the Theoretical Price below if Market Price is 0)
+        default_sigma_percent = st.number_input("Default ATM Volatility (%Sigma):", value=round(default_iv_decimal * 100, 2), format="%.2f")
+        
     # --- Calculations ---
     
     # Convert inputs to decimals and days-to-expiration
     T_delta = expiration_date - datetime.date.today()
     T_days = max(1, T_delta.days)
     r_decimal = r_percent / 100.0
-    sigma_decimal = sigma_percent / 100.0
     q_decimal = q_percent / 100.0
 
-    # Perform the main calculation based on sidebar inputs
+    # Calculate the actual IV based on the Market Price input
+    # If Market Price is available, we use that to solve for IV (The contract's true IV)
+    if market_price > 0.01:
+        solved_iv_decimal = calculate_implied_volatility(S, K, T_days, r_decimal, market_price, q_decimal, option_type)
+        sigma_decimal = solved_iv_decimal
+    else:
+        # If no market price, use the default ATM IV provided by yfinance (user input)
+        sigma_decimal = default_sigma_percent / 100.0
+
+    # Perform the main calculation using the determined sigma
     price = black_scholes_price(S, K, T_days, r_decimal, sigma_decimal, q_decimal, option_type)
 
-    # --- Estimated Price Display in Sidebar (Updated) ---
-    with st.sidebar:
-        st.markdown("---")
-        st.subheader("Current Option Value")
-        st.markdown(f"**Theor. Price:** `${price:.2f}`")
-        st.markdown("Use this price in the IV Solver to back-calculate the *contract's actual IV*.")
-        st.markdown("---")
-        
     # ---------------------------------------------
     # Main Calculation Section
     # ---------------------------------------------
@@ -289,7 +270,11 @@ def main():
 
     with col1:
         st.subheader(f"Theoretical Price ({option_type.upper()})")
-        st.metric(label="Estimated Price", value=f"${price:.2f}")
+        st.metric(label="Estimated Price (using Calculated IV)", value=f"${price:.2f}")
+        st.metric(
+            label="Implied Volatility (Calculated)", 
+            value=f"{sigma_decimal * 100.0:.2f}%"
+        )
         st.info(f"Days to Expiration (DTE): **{T_days}**")
 
     with col2:
@@ -309,45 +294,8 @@ def main():
     # ---------------------------------------------
     
     st.header("3. Option Solvers & Simulators")
-    tab1, tab2, tab3 = st.tabs(["IV Solver", "DTE Simulator", "Implied DTE Solver"])
+    tab2, tab3 = st.tabs(["DTE Simulator", "Implied DTE Solver"])
 
-    # --- Tab 1: IV Solver (Price -> IV) ---
-    with tab1:
-        st.subheader("Solve Implied Volatility (IV)")
-        
-        # New: Use a session state to hold the price input value
-        if 'iv_price_input' not in st.session_state:
-            st.session_state.iv_price_input = price if price > 0.01 else 0.50
-
-        # Input field for market price
-        market_price = st.number_input(
-            "Market Price (C/P):", 
-            min_value=0.01, 
-            value=st.session_state.iv_price_input, 
-            format="%.2f", 
-            key='iv_price'
-        )
-        
-        # Button to transfer the estimated price
-        if st.button(f"Inject Theor. Price (${price:.2f})", key='inject_price'):
-            st.session_state.iv_price_input = price
-            # Force a rerun to update the number_input field with the new value
-            st.rerun()
-
-        # Solve button and logic
-        if st.button("Solve IV", key='solve_iv_button'):
-            if market_price > 0.01:
-                solved_iv_decimal = calculate_implied_volatility(S, K, T_days, r_decimal, market_price, q_decimal, option_type)
-                
-                # Update the main sidebar sigma with the solved value
-                st.session_state.sigma_decimal = solved_iv_decimal
-                
-                st.success(f"✅ Solved IV: **{solved_iv_decimal * 100.0:.2f}%**")
-                st.write(f"*(The Volatility in the sidebar has been updated.)*")
-                st.rerun() # Rerun to update the sidebar input field and main chart
-            else:
-                 st.warning("Please enter a Market Price > $0.01.")
-        
     # --- Tab 2: DTE Simulator (Days -> Price & Greeks) ---
     with tab2:
         st.subheader("Simulate Price at Target DTE")
@@ -375,7 +323,6 @@ def main():
                 solved_date = datetime.date.today() + datetime.timedelta(days=solved_T_days)
                 st.success(f"⏳ Implied DTE: **{solved_T_days} days**")
                 st.write(f"This corresponds to an expiration date of **{solved_date.strftime('%Y-%m-%d')}**.")
-                st.write(f"*(Change the main Expiration Date to this value to see full Greeks/Plot.)*")
             else:
                  st.warning("Please enter a Price to Infer DTE > $0.01.")
 
@@ -395,24 +342,4 @@ def main():
             for s in S_range
         ]
         
-        fig, ax = plt.subplots(figsize=(10, 6))
-        
-        ax.plot(S_range, prices_over_range, label=f'Theoretical Price ({option_type.upper()})', color='darkgreen', linewidth=3)
-        ax.axvline(K, color='blue', linestyle='-.', alpha=0.6, label='Strike Price (K)')
-        ax.axvline(S, color='red', linestyle='--', alpha=0.6, label='Current Stock Price')
-        ax.plot(S, price, 'o', color='red', markersize=8, label=f'Price: ${price:.2f}')
-        ax.set_title(f'{option_type.upper()} Price vs. Underlying Price (IV: {sigma_percent:.2f}%)')
-        ax.set_xlabel('Underlying Price (S)')
-        ax.set_ylabel('Option Theoretical Value ($)')
-        ax.grid(True, linestyle=':', alpha=0.7)
-        ax.legend()
-        
-        st.pyplot(fig)
-        
-    except Exception as e:
-        st.error(f"An error occurred during plotting: {e}")
-    
-    st.markdown("---") 
-
-if __name__ == "__main__":
-    main()
+        fig, ax = plt.subplots(figsize=(1
