@@ -131,7 +131,7 @@ def find_next_3rd_friday(min_days=30):
         exp_date = (exp_date.replace(day=1) + relativedelta(months=1)).replace(day=1) + relativedelta(weekday=FR(3))
     return exp_date.strftime('%Y-%m-%d'), exp_date
 
-# --- CORE FETCHING FUNCTION (Updated to fetch default option price) ---
+# --- CORE FETCHING FUNCTION (Initial data fetch for S, RFR, Q, and default ATM option) ---
 def get_current_data(ticker_symbol):
     """Fetches stock price, RFR, dividend yield, default IV, and default ATM price."""
     # Set fallback defaults
@@ -139,7 +139,7 @@ def get_current_data(ticker_symbol):
     rfr_percent = 4.0
     price = 100.0
     div_yield_decimal = 0.015
-    default_price = 0.50  # NEW FALLBACK PRICE
+    default_price = 0.50  
     
     try:
         # 1. Fetch RFR (^IRX)
@@ -161,8 +161,7 @@ def get_current_data(ticker_symbol):
             elif fetched_div_yield >= 1.0 and fetched_div_yield <= 100.0:
                 div_yield_decimal = fetched_div_yield / 100.0
         
-        
-        # 3. Fetch Option IV and Price for the next 3rd Friday
+        # 3. Fetch Option IV and Price for the next 3rd Friday (ATM Call)
         _, default_exp_date_obj = find_next_3rd_friday(min_days=30)
         default_exp_date_str = default_exp_date_obj.strftime('%Y-%m-%d')
         
@@ -178,19 +177,58 @@ def get_current_data(ticker_symbol):
                 bid = option.get('bid')
                 ask = option.get('ask')
                 
-                # Use IV if it's available and realistic (e.g., above 1%)
                 if implied_vol is not None and implied_vol > 0.01 and implied_vol < 5.0:
                     default_iv_decimal = implied_vol
-                    # Use the mid-price (midpoint between bid and ask) as the default market price
                     if bid is not None and ask is not None and bid > 0 and ask > 0:
                         default_price = (bid + ask) / 2.0
-                    break # Exit loop once a valid IV and Price are found
+                    break 
             
     except Exception:
         pass 
 
     # Return 5 values: Price, Div Yield, Default IV, RFR, Default ATM Price
     return float(price), div_yield_decimal, default_iv_decimal, rfr_percent, default_price
+
+# --- NEW: Function to fetch market data for a SPECIFIC option contract ---
+def get_specific_option_data(ticker_symbol, strike, expiration_date_str, option_type, current_S):
+    default_price = 0.50
+    default_iv_decimal = 0.20
+    
+    try:
+        ticker = yf.Ticker(ticker_symbol)
+        options_data = ticker.option_chain(expiration_date_str)
+        
+        if option_type == 'call':
+            contracts = options_data.calls
+        else:
+            contracts = options_data.puts
+
+        if contracts.empty:
+            return default_price, default_iv_decimal
+        
+        # Find the row that matches the strike price exactly
+        target_contract = contracts[contracts['strike'] == strike]
+
+        if not target_contract.empty:
+            option = target_contract.iloc[0]
+            
+            # Fetch IV
+            implied_vol = option.get('impliedVolatility')
+            if implied_vol is not None and implied_vol > 0.01 and implied_vol < 5.0:
+                default_iv_decimal = implied_vol
+                
+            # Fetch Price
+            bid = option.get('bid')
+            ask = option.get('ask')
+            
+            if bid is not None and ask is not None and bid > 0 and ask > 0:
+                default_price = (bid + ask) / 2.0
+            
+    except Exception:
+        # Fallback to defaults on any error
+        pass
+        
+    return default_price, default_iv_decimal
 
 # ==============================================================================
 # 3. STREAMLIT APPLICATION LAYOUT & LOGIC
@@ -207,6 +245,12 @@ def main():
 
     st.title("💰 Advanced Option Calculator")
     st.markdown("---")
+    
+    # Initialize Session State for dynamic updating
+    if 'current_market_price' not in st.session_state:
+        st.session_state.current_market_price = 0.50
+    if 'current_iv_decimal' not in st.session_state:
+        st.session_state.current_iv_decimal = 0.20
 
     # --- Sidebar Inputs & Ticker Handling ---
     with st.sidebar:
@@ -214,13 +258,22 @@ def main():
         
         ticker_symbol = st.text_input("Stock Symbol:", "SPY").upper()
         
-        # Cache management button
+        # 1A. Fetch Initial Data (S, RFR, Q, and initial defaults for IV/Price)
         st.markdown("---")
-        refresh_button = st.button("🔄 Refresh Market Data (S, RFR, Default IV & Price)")
-        refresh_key = datetime.datetime.now() if refresh_button else None
-        
-        # Fetch data (cached)
-        current_price, current_yield_decimal, default_iv_decimal, current_rfr_percent, default_price = get_initial_data(ticker_symbol, refresh_key)
+        if st.button("🔄 Refresh Market Data (S, RFR, Default ATM IV/Price)"):
+            refresh_key = datetime.datetime.now()
+            current_price, current_yield_decimal, default_iv_decimal, current_rfr_percent, default_price = get_initial_data(ticker_symbol, refresh_key)
+            st.session_state.current_market_price = round(default_price, 2)
+            st.session_state.current_iv_decimal = default_iv_decimal
+        else:
+            # Load from cache on app startup or if no refresh is pressed
+            current_price, current_yield_decimal, default_iv_decimal, current_rfr_percent, default_price = get_initial_data(ticker_symbol, None)
+            
+            # Initialize session state if this is the very first run
+            if st.session_state.current_market_price == 0.50:
+                st.session_state.current_market_price = round(default_price, 2)
+            if st.session_state.current_iv_decimal == 0.20:
+                st.session_state.current_iv_decimal = default_iv_decimal
         
         # Display/Input Parameters
         S = st.number_input("Underlying Price (S):", value=round(current_price, 2), format="%.2f", disabled=True)
@@ -228,13 +281,29 @@ def main():
         
         _, default_date = find_next_3rd_friday(min_days=30)
         expiration_date = st.date_input("Expiration Date:", value=default_date)
+        expiration_date_str = expiration_date.strftime('%Y-%m-%d')
         
         option_type = st.radio("Option Type:", ['call', 'put'], horizontal=True)
 
         st.markdown("---")
 
-        # NEW: Market Price Input uses the fetched default_price
-        market_price = st.number_input("Current Market Price (C/P):", value=round(default_price, 2), min_value=0.01, format="%.2f")
+        # 1B. Fetch Data for the SPECIFIC CONFIGURATION
+        if st.button("🔎 Get Market Price & IV for Configured Option"):
+            fetched_price, fetched_iv = get_specific_option_data(
+                ticker_symbol, K, expiration_date_str, option_type, S
+            )
+            st.session_state.current_market_price = round(fetched_price, 2)
+            st.session_state.current_iv_decimal = fetched_iv
+            st.rerun() # Rerun to update the inputs below
+
+        # Current Market Price Input (Uses Session State)
+        market_price = st.number_input(
+            "Current Market Price (C/P):", 
+            value=st.session_state.current_market_price, 
+            min_value=0.01, 
+            format="%.2f",
+            key='market_price_input'
+        )
 
         # RFR NOW USES THE FETCHED VALUE:
         r_percent = st.number_input("Risk-Free Rate (%r):", value=round(current_rfr_percent, 2), format="%.2f")
@@ -242,8 +311,13 @@ def main():
         # DIV YIELD NOW USES THE FETCHED VALUE:
         q_percent = st.number_input("Dividend Yield (%q):", value=round(current_yield_decimal * 100, 2), format="%.2f")
         
-        # Default Volatility (Used for calculating the Theoretical Price below if Market Price is 0)
-        default_sigma_percent = st.number_input("Default ATM Volatility (%Sigma):", value=round(default_iv_decimal * 100, 2), format="%.2f")
+        # Volatility input uses Session State (updated by both buttons)
+        default_sigma_percent = st.number_input(
+            "Default ATM Volatility (%Sigma):", 
+            value=round(st.session_state.current_iv_decimal * 100, 2), 
+            format="%.2f",
+            key='sigma_input_default'
+        )
         
     # --- Calculations ---
     
@@ -254,13 +328,11 @@ def main():
     q_decimal = q_percent / 100.0
 
     # Calculate the actual IV based on the Market Price input
-    # If Market Price is available, we use that to solve for IV (The contract's true IV)
     if market_price > 0.01:
-        # Note: We use the market_price entered by the user (defaulting to fetched ATM price)
         solved_iv_decimal = calculate_implied_volatility(S, K, T_days, r_decimal, market_price, q_decimal, option_type)
         sigma_decimal = solved_iv_decimal
     else:
-        # Fallback to the default ATM IV provided by yfinance (user input)
+        # Fallback to the default ATM IV if Market Price is 0 or low
         sigma_decimal = default_sigma_percent / 100.0
 
     # Perform the main calculation using the determined sigma
