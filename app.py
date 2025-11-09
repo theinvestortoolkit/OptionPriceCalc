@@ -5,7 +5,7 @@ import yfinance as yf
 import datetime
 from dateutil.relativedelta import relativedelta, FR
 from scipy.optimize import brentq
-import matplotlib.pyplot as plt # Added to top for cleaner structure
+import matplotlib.pyplot as plt
 
 # ==============================================================================
 # 1. CORE BLACK-SCHOLES-MERTON (BSM) FUNCTIONS
@@ -20,7 +20,6 @@ def black_scholes_price(S, K, T, r, sigma, q=0.0, option_type='call'):
             return 0.0
             
         if sigma < 1e-6:
-            # Simplified for zero vol
             if option_type == 'call':
                 price = max(0.0, S * np.exp(-q * T_years) - K * np.exp(-r * T_years))
             else:
@@ -119,7 +118,10 @@ def calculate_implied_time(S, K, sigma, r, market_price, q=0.0, option_type='cal
     except Exception:
         return 365
         
-# --- Data Fetching ---
+# ==============================================================================
+# 2. DATA FETCHING (RFR and Stock Price)
+# ==============================================================================
+
 def find_next_3rd_friday(min_days=30):
     today = datetime.date.today()
     exp_date = today.replace(day=1) + relativedelta(weekday=FR(3))
@@ -130,26 +132,42 @@ def find_next_3rd_friday(min_days=30):
     return exp_date.strftime('%Y-%m-%d'), exp_date
 
 def get_current_data(ticker_symbol):
+    """Fetches stock price and RFR using yfinance."""
     try:
+        # 1. Fetch RFR (using ^IRX for 13-week T-Bill Yield)
+        rfr_ticker = yf.Ticker('^IRX')
+        rfr_info = rfr_ticker.history(period="1d", interval="1m")
+        if not rfr_info.empty:
+            rfr_percent = rfr_info['Close'].iloc[-1]
+        else:
+            rfr_percent = 4.0 # Fallback default
+        
+        # 2. Fetch Stock Data
         ticker = yf.Ticker(ticker_symbol)
         price = ticker.info.get('regularMarketPrice')
-        div_yield_decimal = ticker.info.get('dividendYield', 0.015)
-        if div_yield_decimal > 1.0: div_yield_decimal /= 100.0
         
+        # Handle dividend yield
+        div_yield_decimal = ticker.info.get('dividendYield', 0.015)
+        if div_yield_decimal is None or div_yield_decimal > 1.0: 
+            div_yield_decimal = 0.015 
+        
+        # Default IV (since real-time option IV is complex to fetch with yfinance)
         default_iv_decimal = 0.20 
 
-        return float(price), div_yield_decimal, default_iv_decimal
+        # Return 4 values: Price, Dividend Yield (decimal), Default IV (decimal), RFR (percentage)
+        return float(price), div_yield_decimal, default_iv_decimal, rfr_percent
     except Exception:
-        return 100.0, 0.015, 0.20 # Fallback values
+        # Fallback values if YFinance fails completely
+        return 100.0, 0.015, 0.20, 4.0 
 
 # ==============================================================================
-# 2. STREAMLIT APPLICATION LAYOUT & LOGIC
+# 3. STREAMLIT APPLICATION LAYOUT & LOGIC
 # ==============================================================================
 
 # Use a Streamlit function to memoize (cache) data fetching for speed
 @st.cache_data
 def get_initial_data(ticker):
-    """Initial fetch for S, q, and sigma."""
+    """Initial fetch for S, q, sigma, and r."""
     return get_current_data(ticker)
 
 def main():
@@ -162,10 +180,11 @@ def main():
     with st.sidebar:
         st.header("1. Core Inputs")
         
+        # Ticker input and fetching current price/defaults
         ticker_symbol = st.text_input("Stock Symbol:", "SPY").upper()
         
-        # Fetch data (cached)
-        current_price, current_yield_decimal, default_iv_decimal = get_initial_data(ticker_symbol)
+        # Fetch data (cached) - NOTE THE 4 RETURN VALUES!
+        current_price, current_yield_decimal, default_iv_decimal, current_rfr_percent = get_initial_data(ticker_symbol)
         
         # Display/Input Parameters
         S = st.number_input("Underlying Price (S):", value=round(current_price, 2), format="%.2f", disabled=True)
@@ -176,7 +195,8 @@ def main():
         expiration_date = st.date_input("Expiration Date:", value=default_date)
         
         # Other inputs
-        r_percent = st.number_input("Risk-Free Rate (%r):", value=4.0, format="%.2f")
+        # RFR NOW USES THE FETCHED VALUE:
+        r_percent = st.number_input("Risk-Free Rate (%r):", value=round(current_rfr_percent, 2), format="%.2f")
         sigma_percent = st.number_input("Volatility (%Sigma):", value=round(default_iv_decimal * 100, 2), format="%.2f")
         q_percent = st.number_input("Dividend Yield (%q):", value=round(current_yield_decimal * 100, 2), format="%.2f")
         option_type = st.radio("Option Type:", ['call', 'put'], horizontal=True)
