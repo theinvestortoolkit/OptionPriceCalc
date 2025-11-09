@@ -189,7 +189,7 @@ def get_current_data(ticker_symbol):
     # Return 5 values: Price, Div Yield, Default IV, RFR, Default ATM Price
     return float(price), div_yield_decimal, default_iv_decimal, rfr_percent, default_price
 
-# --- NEW: Function to fetch market data for a SPECIFIC option contract ---
+# --- Function to fetch market data for a SPECIFIC option contract ---
 def get_specific_option_data(ticker_symbol, strike, expiration_date_str, option_type, current_S):
     default_price = 0.50
     default_iv_decimal = 0.20
@@ -246,7 +246,7 @@ def main():
     st.title("💰 Advanced Option Calculator")
     st.markdown("---")
     
-    # Initialize Session State for dynamic updating
+    # Initialize Session State for dynamic updating (Market Price and IV defaults)
     if 'current_market_price' not in st.session_state:
         st.session_state.current_market_price = 0.50
     if 'current_iv_decimal' not in st.session_state:
@@ -254,13 +254,12 @@ def main():
 
     # --- Sidebar Inputs & Ticker Handling ---
     with st.sidebar:
-        st.header("1. Core Inputs")
-        
+        st.header("1. Ticker & Refresh")
         ticker_symbol = st.text_input("Stock Symbol:", "SPY").upper()
         
         # 1A. Fetch Initial Data (S, RFR, Q, and initial defaults for IV/Price)
         st.markdown("---")
-        if st.button("🔄 Refresh Market Data (S, RFR, Default ATM IV/Price)"):
+        if st.button("🔄 Refresh Core Data (S, RFR, Q, Default ATM IV/Price)"):
             refresh_key = datetime.datetime.now()
             current_price, current_yield_decimal, default_iv_decimal, current_rfr_percent, default_price = get_initial_data(ticker_symbol, refresh_key)
             st.session_state.current_market_price = round(default_price, 2)
@@ -274,18 +273,34 @@ def main():
                 st.session_state.current_market_price = round(default_price, 2)
             if st.session_state.current_iv_decimal == 0.20:
                 st.session_state.current_iv_decimal = default_iv_decimal
+
+        st.markdown("---")
+        st.header("2. Input Parameters")
         
-        # Display/Input Parameters
-        S = st.number_input("Underlying Price (S):", value=round(current_price, 2), format="%.2f", disabled=True)
+        # Core BSM Inputs
+        S = st.number_input("Underlying Price (S):", value=round(current_price, 2), format="%.2f") # Made editable
+        
+        option_type = st.radio("Option Type:", ['call', 'put'], horizontal=True)
         K = st.number_input("Strike Price (K):", value=round(current_price, 0), format="%.2f") 
         
         _, default_date = find_next_3rd_friday(min_days=30)
         expiration_date = st.date_input("Expiration Date:", value=default_date)
         expiration_date_str = expiration_date.strftime('%Y-%m-%d')
         
-        option_type = st.radio("Option Type:", ['call', 'put'], horizontal=True)
-
+        r_percent = st.number_input("Risk-free Rate (%r):", value=round(current_rfr_percent, 2), format="%.2f")
+        
+        # Volatility is now a direct input, defaulting to the last fetched/solved IV
+        sigma_percent = st.number_input(
+            "Volatility (%Sigma):", 
+            value=round(st.session_state.current_iv_decimal * 100, 2), 
+            format="%.2f",
+            key='sigma_input_default'
+        )
+        
+        q_percent = st.number_input("Dividend Yield (%q):", value=round(current_yield_decimal * 100, 2), format="%.2f")
+        
         st.markdown("---")
+        st.header("3. Market Data Solver")
 
         # 1B. Fetch Data for the SPECIFIC CONFIGURATION
         if st.button("🔎 Get Market Price & IV for Configured Option"):
@@ -294,7 +309,7 @@ def main():
             )
             st.session_state.current_market_price = round(fetched_price, 2)
             st.session_state.current_iv_decimal = fetched_iv
-            st.rerun() # Rerun to update the inputs below
+            st.rerun() # Rerun to update the inputs
 
         # Current Market Price Input (Uses Session State)
         market_price = st.number_input(
@@ -304,20 +319,6 @@ def main():
             format="%.2f",
             key='market_price_input'
         )
-
-        # RFR NOW USES THE FETCHED VALUE:
-        r_percent = st.number_input("Risk-Free Rate (%r):", value=round(current_rfr_percent, 2), format="%.2f")
-        
-        # DIV YIELD NOW USES THE FETCHED VALUE:
-        q_percent = st.number_input("Dividend Yield (%q):", value=round(current_yield_decimal * 100, 2), format="%.2f")
-        
-        # Volatility input uses Session State (updated by both buttons)
-        default_sigma_percent = st.number_input(
-            "Default ATM Volatility (%Sigma):", 
-            value=round(st.session_state.current_iv_decimal * 100, 2), 
-            format="%.2f",
-            key='sigma_input_default'
-        )
         
     # --- Calculations ---
     
@@ -326,17 +327,15 @@ def main():
     T_days = max(1, T_delta.days)
     r_decimal = r_percent / 100.0
     q_decimal = q_percent / 100.0
+    
+    # Use the sigma input directly from the sidebar
+    sigma_decimal_input = sigma_percent / 100.0
 
-    # Calculate the actual IV based on the Market Price input
-    if market_price > 0.01:
-        solved_iv_decimal = calculate_implied_volatility(S, K, T_days, r_decimal, market_price, q_decimal, option_type)
-        sigma_decimal = solved_iv_decimal
-    else:
-        # Fallback to the default ATM IV if Market Price is 0 or low
-        sigma_decimal = default_sigma_percent / 100.0
-
-    # Perform the main calculation using the determined sigma
-    price = black_scholes_price(S, K, T_days, r_decimal, sigma_decimal, q_decimal, option_type)
+    # Calculate the actual IV based on the Market Price input for the solver section metric
+    solved_iv_decimal = calculate_implied_volatility(S, K, T_days, r_decimal, market_price, q_decimal, option_type)
+    
+    # Perform the main calculation using the user's input sigma
+    price = black_scholes_price(S, K, T_days, r_decimal, sigma_decimal_input, q_decimal, option_type)
 
     # ---------------------------------------------
     # Main Calculation Section
@@ -346,15 +345,15 @@ def main():
     col1, col2 = st.columns(2)
     
     # Perform main calculation (price is already calculated)
-    greeks = black_scholes_greeks(S, K, T_days, r_decimal, sigma_decimal, q_decimal, option_type)
-    pot = calculate_probability_of_touch(S, K, T_days, r_decimal, sigma_decimal, q_decimal)
+    greeks = black_scholes_greeks(S, K, T_days, r_decimal, sigma_decimal_input, q_decimal, option_type)
+    pot = calculate_probability_of_touch(S, K, T_days, r_decimal, sigma_decimal_input, q_decimal)
 
     with col1:
         st.subheader(f"Theoretical Price ({option_type.upper()})")
-        st.metric(label="Estimated Price (using Calculated IV)", value=f"${price:.2f}")
+        st.metric(label="Estimated Price (using Input Volatility)", value=f"${price:.2f}")
         st.metric(
-            label="Implied Volatility (Calculated)", 
-            value=f"{sigma_decimal * 100.0:.2f}%"
+            label="Implied Volatility (Solved from Market Price)", 
+            value=f"{solved_iv_decimal * 100.0:.2f}%"
         )
         st.info(f"Days to Expiration (DTE): **{T_days}**")
 
@@ -382,9 +381,9 @@ def main():
         st.subheader("Simulate Price at Target DTE")
         target_dte = st.number_input("Target DTE (Days):", min_value=1, value=30, step=1)
         if st.button("Simulate Price at DTE"):
-            sim_price = black_scholes_price(S, K, target_dte, r_decimal, sigma_decimal, q_decimal, option_type)
-            sim_greeks = black_scholes_greeks(S, K, target_dte, r_decimal, sigma_decimal, q_decimal, option_type)
-            sim_pot = calculate_probability_of_touch(S, K, target_dte, r_decimal, sigma_decimal, q_decimal)
+            sim_price = black_scholes_price(S, K, target_dte, r_decimal, sigma_decimal_input, q_decimal, option_type)
+            sim_greeks = black_scholes_greeks(S, K, target_dte, r_decimal, sigma_decimal_input, q_decimal, option_type)
+            sim_pot = calculate_probability_of_touch(S, K, target_dte, r_decimal, sigma_decimal_input, q_decimal)
             
             sim_date = datetime.date.today() + datetime.timedelta(days=target_dte)
             
@@ -396,10 +395,11 @@ def main():
     # --- Tab 3: Implied DTE Solver (Price -> Days) ---
     with tab3:
         st.subheader("Solve Implied DTE")
-        implied_dte_price = st.number_input("Price to Infer DTE:", min_value=0.01, value=price if price > 0.01 else 0.50, format="%.2f", key='dte_price')
+        # Note: We use the *Calculated* IV (solved_iv_decimal) for a more realistic DTE estimate
+        implied_dte_price = st.number_input("Price to Infer DTE:", min_value=0.01, value=market_price if market_price > 0.01 else 0.50, format="%.2f", key='dte_price')
         if st.button("Solve Implied DTE"):
             if implied_dte_price > 0.01:
-                solved_T_days = int(round(calculate_implied_time(S, K, sigma_decimal, r_decimal, implied_dte_price, q_decimal, option_type)))
+                solved_T_days = int(round(calculate_implied_time(S, K, solved_iv_decimal, r_decimal, implied_dte_price, q_decimal, option_type)))
                 
                 solved_date = datetime.date.today() + datetime.timedelta(days=solved_T_days)
                 st.success(f"⏳ Implied DTE: **{solved_T_days} days**")
@@ -421,7 +421,7 @@ def main():
         S_range = np.linspace(S_min, S_max, 100)
         
         prices_over_range = [
-            black_scholes_price(s, K, T_days, r_decimal, sigma_decimal, q_decimal, option_type)
+            black_scholes_price(s, K, T_days, r_decimal, sigma_decimal_input, q_decimal, option_type)
             for s in S_range
         ]
         
@@ -429,7 +429,7 @@ def main():
         ax.axvline(K, color='blue', linestyle='-.', alpha=0.6, label='Strike Price (K)')
         ax.axvline(S, color='red', linestyle='--', alpha=0.6, label='Current Stock Price')
         ax.plot(S, price, 'o', color='red', markersize=8, label=f'Price: ${price:.2f}')
-        ax.set_title(f'{option_type.upper()} Price vs. Underlying Price (IV: {sigma_decimal * 100.0:.2f}%)')
+        ax.set_title(f'{option_type.upper()} Price vs. Underlying Price (IV: {sigma_percent:.2f}%)')
         ax.set_xlabel('Underlying Price (S)')
         ax.set_ylabel('Option Theoretical Value ($)')
         ax.grid(True, linestyle=':', alpha=0.7)
